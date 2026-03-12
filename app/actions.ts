@@ -47,35 +47,41 @@ export async function addMangueraAction(formData: FormData) {
 }
 
 
-export async function cortarMangueraAction(id: number, metrosUsados: number) {
-  "use server";
+export async function cortarMangueraAction(
+  id: number,
+  metrosUsados: number,
+  usuarioId: number) {
+    ("use server");
 
-  // Buscar el rollo
-  const rollo = await prisma.manguera.findUnique({
-    where: { id },
-  });
+    // Validación de datos (igual que en addMangueraAction)
+    if (!id || isNaN(metrosUsados) || !usuarioId) {
+      throw new Error("Datos inválidos");
+    }
 
-  if (!rollo) throw new Error("Rollo no encontrado");
-//aca esta sumando pero no encontre el porque termina inertido, aca esta restando realmente
-  const nuevosMetros = rollo.metros + metrosUsados;
-
-  if (nuevosMetros <= 0) {
-    // Si se acabó o usaron más de lo que había, eliminar el registro
-    await prisma.manguera.delete({ where: { id } });
-  } else {
-    // Actualizar metros restantes
-    await prisma.manguera.update({
+    // Buscar el rollo
+    const rollo = await prisma.manguera.findUnique({
       where: { id },
-      data: { metros: nuevosMetros },
     });
-  }
 
-  revalidatePath("/");
-}
-// Eliminar un registro específico por ID
-export async function deleteMangueraAction(id: number) {
-  await prisma.manguera.delete({
-    where: { id },
-  });
-  revalidatePath("/");
-}
+    if (!rollo) throw new Error("Rollo no encontrado");
+
+    // metrosUsados viene negativo (ej: -10), entonces resta: 100 + (-10) = 90
+    const nuevosMetros = rollo.metros + metrosUsados;
+
+    if (nuevosMetros <= 0) {
+      // Si se acabó o usaron más de lo que había, eliminar el registro
+      await prisma.manguera.delete({ where: { id } });
+    } else {
+      // Actualizar metros restantes
+      await prisma.manguera.update({
+        where: { id },
+        data: {
+          metros: nuevosMetros,
+          // Si querés registrar quién fue el último en modificarlo:
+          // usuarioId: usuarioId,
+        },
+      });
+    }
+
+    revalidatePath("/");
+  }

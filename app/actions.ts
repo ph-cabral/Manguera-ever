@@ -50,38 +50,38 @@ export async function addMangueraAction(formData: FormData) {
 export async function cortarMangueraAction(
   id: number,
   metrosUsados: number,
-  usuarioId: number) {
-    ("use server");
+  usuarioId: number,
+) {
+  "use server";
 
-    // Validación de datos (igual que en addMangueraAction)
-    if (!id || isNaN(metrosUsados) || !usuarioId) {
-      throw new Error("Datos inválidos");
-    }
-
-    // Buscar el rollo
-    const rollo = await prisma.manguera.findUnique({
-      where: { id },
-    });
-
-    if (!rollo) throw new Error("Rollo no encontrado");
-
-    // metrosUsados viene negativo (ej: -10), entonces resta: 100 + (-10) = 90
-    const nuevosMetros = rollo.metros + metrosUsados;
-
-    if (nuevosMetros <= 0) {
-      // Si se acabó o usaron más de lo que había, eliminar el registro
-      await prisma.manguera.delete({ where: { id } });
-    } else {
-      // Actualizar metros restantes
-      await prisma.manguera.update({
-        where: { id },
-        data: {
-          metros: nuevosMetros,
-          // Si querés registrar quién fue el último en modificarlo:
-          // usuarioId: usuarioId,
-        },
-      });
-    }
-
-    revalidatePath("/");
+  // Validación de datos (igual que en addMangueraAction)
+  if (!id || isNaN(metrosUsados) || !usuarioId) {
+    throw new Error("Datos inválidos");
   }
+
+  // Buscar el rollo
+  const rollo = await prisma.manguera.findUnique({
+    where: { id },
+  });
+
+  if (!rollo) throw new Error("Rollo no encontrado");
+
+  // metrosUsados viene negativo (ej: -10), entonces resta: 100 + (-10) = 90
+  const nuevosMetros = rollo.metros + metrosUsados;
+
+  if (nuevosMetros <= 0) {
+    // Si se acabó o usaron más de lo que había, eliminar el registro
+    await prisma.manguera.delete({ where: { id } });
+  } else {
+    // Actualizar metros restantes
+    await prisma.manguera.update({
+      where: { id },
+      data: {
+        metros: nuevosMetros,
+        // usuarioId: usuarioId, // Descomentar si querés saber quién fue el último
+      },
+    });
+  }
+
+  revalidatePath("/");
+}

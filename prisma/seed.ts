@@ -3,9 +3,7 @@ const prisma = new PrismaClient();
 
 async function main() {
   const usuarios = [
-    { nombre: "Juan Pérez" },
-    { nombre: "María González" },
-    { nombre: "Carlos Rodríguez" },
+    { nombre: "Diego Furrer" },
   ];
 
   for (const usuario of usuarios) {

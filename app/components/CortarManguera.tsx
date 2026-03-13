@@ -63,14 +63,14 @@ import { cortarMangueraAction } from "../actions";
 interface CortarMangueraProps {
   id: number;
   codigo: string;
-  usuarioId?: number;
+  personalId?: number;
   disabled?: boolean;
 }
 
 export function CortarManguera({
   id,
   codigo,
-  usuarioId,
+  personalId,
   disabled,
 }: CortarMangueraProps) {
   const [metros, setMetros] = useState<number>(0);
@@ -78,12 +78,11 @@ export function CortarManguera({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (metros <= 0 || !usuarioId) return;
+    if (metros <= 0 || !personalId) return;
 
     setLoading(true);
     try {
-      // Enviamos también el usuarioId a la acción
-      await cortarMangueraAction(id, metros * -1, usuarioId);
+      await cortarMangueraAction(id, metros * -1, personalId);
       setMetros(0);
     } catch (error) {
       alert(error instanceof Error ? error.message : "Error al cortar");

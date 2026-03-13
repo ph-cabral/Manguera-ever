@@ -1,7 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  experimental: {
+    allowedHosts: ['mangueras.everwear', 'localhost', '10.10.0.159'],
+  },
 };
 
 export default nextConfig;
+

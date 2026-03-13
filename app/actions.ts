@@ -3,8 +3,8 @@
 import { prisma } from "../lib/prisma";
 import { revalidatePath } from "next/cache";
 
-export async function getUsuariosAction() {
-  return await prisma.usuario.findMany({
+export async function getPersonalAction() {
+  return await prisma.personal.findMany({
     orderBy: { nombre: "asc" },
     select: { id: true, nombre: true }, // Solo lo necesario
   });
@@ -16,7 +16,7 @@ export async function getManguerasAction() {
   return await prisma.manguera.findMany({
     orderBy: { createdAt: "desc" },
     include: {
-      usuario: {
+      personal: {
         select: { nombre: true }, // Traemos solo el nombre del que registró
       },
     },
@@ -28,9 +28,9 @@ export async function addMangueraAction(formData: FormData) {
   const codigo = (formData.get("codigo") as string).toUpperCase().trim();
   const metros = parseInt(formData.get("metros") as string); // Int, no Float
   const ubicacion = (formData.get("ubicacion") as string).toUpperCase().trim();
-  const usuarioId = parseInt(formData.get("usuarioId") as string);
+  const personalId = parseInt(formData.get("personalId") as string);
 
-  if (!codigo || isNaN(metros) || metros <= 0 || isNaN(usuarioId)) {
+  if (!codigo || isNaN(metros) || metros <= 0 || isNaN(personalIdId)) {
     throw new Error("Datos inválidos");
   }
 
@@ -39,7 +39,7 @@ export async function addMangueraAction(formData: FormData) {
       codigo: codigo,
       metros: metros,
       ubicacion: ubicacion || null,
-      usuarioId,
+      personalId,
     },
   });
 
@@ -50,12 +50,12 @@ export async function addMangueraAction(formData: FormData) {
 export async function cortarMangueraAction(
   id: number,
   metrosUsados: number,
-  usuarioId: number,
+  personalId: number,
 ) {
   "use server";
 
   // Validación de datos (igual que en addMangueraAction)
-  if (!id || isNaN(metrosUsados) || !usuarioId) {
+  if (!id || isNaN(metrosUsados) || !personalId) {
     throw new Error("Datos inválidos");
   }
 

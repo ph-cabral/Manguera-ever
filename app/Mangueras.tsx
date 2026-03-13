@@ -1,11 +1,11 @@
-import { getManguerasAction, getUsuariosAction } from "./actions";
+import { getManguerasAction, getPersonalAction } from "./actions";
 import { ManguerasClient } from "./ManguerasClient";
 
 export default async function Mangueras() {
-  const [mangueras, usuarios] = await Promise.all([
+  const [mangueras, personal] = await Promise.all([
     getManguerasAction(),
-    getUsuariosAction(),
+    getPersonalAction(),
   ]);
 
-  return <ManguerasClient mangueras={mangueras} usuarios={usuarios} />;
+  return <ManguerasClient mangueras={mangueras} personal={personal} />;
 }

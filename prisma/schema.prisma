@@ -3,29 +3,52 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = "file:./dev.db"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
-model Usuario {
-  id        Int        @id @default(autoincrement())
-  nombre    String     
-  registros Manguera[] // Un usuario tiene muchas mangueras
-  createdAt DateTime   @default(now())
+model Personal {
+  id        Int      @id @default(autoincrement())
+  nombre    String
+  dni       String?  @unique  // Opcional: identificación del operario
+  activo    Boolean  @default(true)
+  cortes    Corte[]  // Relación: un personal hace muchos cortes
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model Manguera {
-  id          Int       @id @default(autoincrement())
-  codigo      String    @unique  // ← Volvé a agregar @unique si querés evitar duplicados
-  metros      Int       
-  ubicacion   String?   
-  usuarioId   Int       
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  
-  // CAMPO DE RELACIÓN QUE TE FALTA:
-  usuario     Usuario   @relation(fields: [usuarioId], references: [id])
-  
+  id          Int      @id @default(autoincrement())
+  codigo      String   @unique  // ej: "AG-001" (Agua 1/2")
+  tipo        String   // ej: "agua", "aire", "combustible"
+  diametro    String   // ej: "1/2 pulgada"
+  // Stock total disponible (lo que queda en el depósito)
+  stock       Int      @default(0)  // metros disponibles
+  ubicacion   String?  // ej: "Estante 3, Depósito A"
+  cortes      Corte[]  // Relación: una manguera tiene muchos cortes históricos
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
   @@index([codigo])
-  @@index([usuarioId])
+  @@index([tipo])
 }
+
+model Corte {
+  id          Int      @id @default(autoincrement())
+  metros      Int      // Cuántos metros se cortaron/sacaron
+  fecha       DateTime @default(now())
+  observacion String?  // Opcional: "Para cliente X", "Urgente", etc.
+  
+  // Relaciones
+  personalId  Int
+  personal    Personal @relation(fields: [personalId], references: [id])
+  
+  mangueraId  Int
+  manguera    Manguera @relation(fields: [mangueraId], references: [id])
+
+  @@index([fecha])
+  @@index([personalId])
+  @@index([mangueraId])
+}
+

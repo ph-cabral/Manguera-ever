@@ -63,7 +63,7 @@ export function AddMangueraModal({
     formData.append("codigo", codigo);
     formData.append("metros", metro);
     formData.append("ubicacion", ubicacion);
-    formData.append("usuarioId", "1"); // ← Temporal hasta que tengas auth
+    formData.append("personalId", "1"); // ← Temporal hasta que tengas auth
 
     try {
       await addMangueraAction(formData);

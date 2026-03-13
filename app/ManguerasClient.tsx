@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { MangueraTable } from "./components/MangueraTable";
 import { AddMangueraModal } from "./components/AddMangueraModal";
-import { SelectUsuario } from "./components/SelectUsuario";
+import { SelectPersonal } from "./components/SelectPersonal";
 
 type Manguera = {
   id: number;
@@ -12,21 +12,21 @@ type Manguera = {
   ubicacion: string | null;
 };
 
-type Usuario = {
+type Personal = {
   id: number;
   nombre: string;
 };
 
 export function ManguerasClient({
   mangueras,
-  usuarios,
+  personal,
 }: {
   mangueras: Manguera[];
-  usuarios: Usuario[];
+  personal: Personal[];
 }) {
   const [modalAbierto, setModalAbierto] = useState(false);
   // Estado elevado al padre para compartir entre componentes
-  const [usuarioSeleccionado, setUsuarioSeleccionado] = useState<number | "">(
+  const [personalSeleccionado, setPersonalSeleccionado] = useState<number | "">(
     "",
   );
 
@@ -38,10 +38,10 @@ export function ManguerasClient({
 
         <div className="flex flex-row lg:flex-row gap-4 items-start lg:items-center w-full lg:w-auto">
           {/* Componente reutilizable */}
-          <SelectUsuario
-            usuarios={usuarios}
-            value={usuarioSeleccionado}
-            onChange={setUsuarioSeleccionado}
+          <SelectPersonal
+            personal={personal}
+            value={personalSeleccionado}
+            onChange={setPersonalSeleccionado}
           />
 
           <button
@@ -54,9 +54,9 @@ export function ManguerasClient({
       </div>
 
       {/* Alerta de validación */}
-      {!usuarioSeleccionado && usuarios.length > 0 && (
+      {!personalSeleccionado && personal.length > 0 && (
         <div className="mb-4 bg-yellow-50 border border-yellow-200 text-yellow-800 px-4 py-2 rounded-lg text-sm">
-          ⚠️ Seleccioná un usuario para poder cortar mangueras
+          ⚠️ Seleccioná a alguien para poder cortar mangueras
         </div>
       )}
 
@@ -70,8 +70,8 @@ export function ManguerasClient({
       {/* Tabla recibe el usuario seleccionado */}
       <MangueraTable
         mangueras={mangueras}
-        usuarios={usuarios}
-        usuarioSeleccionado={usuarioSeleccionado}
+        personal={personal}
+        personalSeleccionado={personalSeleccionadoSeleccionado}
       />
     </main>
   );

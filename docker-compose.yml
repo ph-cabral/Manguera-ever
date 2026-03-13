@@ -1,0 +1,25 @@
+
+services:
+  mangueras-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mangueras_ever
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://n8n:3v3rW3ar@postgres:5432/fabrica_db?schema=public
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+      NODE_ENV: production
+      # Si tenés variables de NextAuth u otras:
+      # NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
+    ports:
+      - "3001:3000"
+    networks:
+      - ai-net  # Usa la red existente del otro compose
+    # Si querés exponer directo: ports: - "3000:3000"
+    # Si usás Nginx del otro compose, no expongas puerto (solo interno)
+
+networks:
+  ai-net:
+    external: true  # Importante: usa la red ya creada por el otro compose
+

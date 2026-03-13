@@ -6,8 +6,8 @@ WORKDIR /app
 # Instalar dependencias del sistema para Prisma (en Debian)
 RUN apt-get update && apt-get install -y openssl && rm -rf /var/lib/apt/lists/*
 
-COPY package*.json ./
 COPY prisma ./prisma/
+COPY package*.json ./
 
 RUN npm ci
 
@@ -15,6 +15,8 @@ RUN npm ci
 RUN npx prisma generate
 
 COPY . .
+
+ENV DATABASE_URL="file:./dev.db"
 
 # Build de Next.js (ahora tiene OpenSSL disponible)
 RUN npm run build

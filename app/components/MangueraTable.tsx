@@ -10,19 +10,19 @@ type Manguera = {
   ubicacion: string | null;
 };
 
-type Usuario = {
+type Personal = {
   id: number;
   nombre: string;
 };
 
 export function MangueraTable({
   mangueras,
-  usuarios = [],
-  usuarioSeleccionado, // Recibe del padre
+  personal = [],
+  personalSeleccionado, // Recibe del padre
 }: {
   mangueras: Manguera[];
-  usuarios?: Usuario[];
-  usuarioSeleccionado: number | ""; // Nueva prop requerida
+  personal?: Personal[];
+  personalSeleccionado: number | ""; // Nueva prop requerida
 }) {
   const [filtro, setFiltro] = useState("");
 
@@ -100,8 +100,8 @@ export function MangueraTable({
                     <CortarManguera
                       id={m.id}
                       codigo={m.codigo}
-                      usuarioId={usuarioSeleccionado || undefined}
-                      disabled={!usuarioSeleccionado}
+                      personalId={personalSeleccionado || undefined}
+                      disabled={!personalSeleccionado}
                     />
                   </td>
                 </tr>

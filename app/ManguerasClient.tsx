@@ -71,7 +71,7 @@ export function ManguerasClient({
       <MangueraTable
         mangueras={mangueras}
         personal={personal}
-        personalSeleccionado={personalSeleccionadoSeleccionado}
+        personalSeleccionado={personalSeleccionado}
       />
     </main>
   );

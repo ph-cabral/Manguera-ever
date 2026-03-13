@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
   shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
@@ -21,17 +21,13 @@ model Personal {
 model Manguera {
   id          Int      @id @default(autoincrement())
   codigo      String   @unique  // ej: "AG-001" (Agua 1/2")
-  tipo        String   // ej: "agua", "aire", "combustible"
-  diametro    String   // ej: "1/2 pulgada"
-  // Stock total disponible (lo que queda en el depósito)
-  stock       Int      @default(0)  // metros disponibles
+  metros       Int      @default(0)  // metros disponibles
   ubicacion   String?  // ej: "Estante 3, Depósito A"
   cortes      Corte[]  // Relación: una manguera tiene muchos cortes históricos
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   @@index([codigo])
-  @@index([tipo])
 }
 
 model Corte {

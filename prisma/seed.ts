@@ -2,15 +2,15 @@ import { PrismaClient } from "@prisma/client";
 const prisma = new PrismaClient();
 
 async function main() {
-  const usuarios = [
+  const personal = [
     { nombre: "Diego Furrer" },
   ];
 
-  for (const usuario of usuarios) {
-    await prisma.usuario.create({ data: usuario });
+  for (const persona of personal) {
+    await prisma.personal.create({ data: persona });
   }
 
-  console.log("Usuarios creados");
+  console.log("Personal creado");
 }
 
 main()

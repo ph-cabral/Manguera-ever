@@ -6,81 +6,77 @@ import { revalidatePath } from "next/cache";
 export async function getPersonalAction() {
   return await prisma.personal.findMany({
     orderBy: { nombre: "asc" },
-    select: { id: true, nombre: true }, // Solo lo necesario
+    select: { id: true, nombre: true },
   });
 }
 
-
-// Obtener todas las mangueras (rollos individuales)
 export async function getManguerasAction() {
   return await prisma.manguera.findMany({
     orderBy: { createdAt: "desc" },
-    include: {
-      personal: {
-        select: { nombre: true }, // Traemos solo el nombre del que registró
-      },
-    },
   });
 }
 
-// Agregar nueva manguera/recorte
 export async function addMangueraAction(formData: FormData) {
   const codigo = (formData.get("codigo") as string).toUpperCase().trim();
-  const metros = parseInt(formData.get("metros") as string); // Int, no Float
+  const metros = parseInt(formData.get("metros") as string);
   const ubicacion = (formData.get("ubicacion") as string).toUpperCase().trim();
-  const personalId = parseInt(formData.get("personalId") as string);
 
-  if (!codigo || isNaN(metros) || metros <= 0 || isNaN(personalId)) {
+  if (!codigo || isNaN(metros) || metros <= 0) {
     throw new Error("Datos inválidos");
   }
 
   await prisma.manguera.create({
     data: {
-      codigo: codigo,
-      metros: metros,
+      codigo,
+      metros,
       ubicacion: ubicacion || null,
-      personalId,
     },
   });
 
   revalidatePath("/");
 }
 
-
 export async function cortarMangueraAction(
   id: number,
   metrosUsados: number,
   personalId: number,
 ) {
-  "use server";
-
-  // Validación de datos (igual que en addMangueraAction)
   if (!id || isNaN(metrosUsados) || !personalId) {
     throw new Error("Datos inválidos");
   }
 
-  // Buscar el rollo
   const rollo = await prisma.manguera.findUnique({
     where: { id },
   });
 
   if (!rollo) throw new Error("Rollo no encontrado");
 
-  // metrosUsados viene negativo (ej: -10), entonces resta: 100 + (-10) = 90
   const nuevosMetros = rollo.metros + metrosUsados;
 
   if (nuevosMetros <= 0) {
-    // Si se acabó o usaron más de lo que había, eliminar el registro
-    await prisma.manguera.delete({ where: { id } });
-  } else {
-    // Actualizar metros restantes
-    await prisma.manguera.update({
-      where: { id },
+    // Registrar corte antes de eliminar
+    await prisma.corte.create({
       data: {
-        metros: nuevosMetros,
-        // usuarioId: usuarioId, // Descomentar si querés saber quién fue el último
+        metros: Math.abs(metrosUsados),
+        personalId,
+        mangueraId: id,
       },
     });
+    await prisma.manguera.delete({ where: { id } });
+  } else {
+    await prisma.$transaction([
+      prisma.corte.create({
+        data: {
+          metros: Math.abs(metrosUsados),
+          personalId,
+          mangueraId: id,
+        },
+      }),
+      prisma.manguera.update({
+        where: { id },
+        data: { metros: nuevosMetros },
+      }),
+    ]);
   }
 
   revalidatePath("/");

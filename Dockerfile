@@ -16,7 +16,7 @@ RUN npx prisma generate
 
 COPY . .
 
-ENV DATABASE_URL="file:./dev.db"
+ENV DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy"
 
 # Build de Next.js (ahora tiene OpenSSL disponible)
 RUN npm run build

@@ -81,3 +81,22 @@ export async function cortarMangueraAction(
 
   revalidatePath("/");
 }
+
+export async function addPersonalAction(formData: FormData) {
+  const nombre = (formData.get("nombre") as string).toUpperCase().trim();
+  const dni = (formData.get("dni") as string)?.trim() || null;
+
+  if (!nombre) {
+    throw new Error("El nombre es obligatorio");
+  }
+
+  await prisma.personal.create({
+    data: {
+      nombre,
+      dni,
+    },
+  });
+
+  revalidatePath("/");
+}
+

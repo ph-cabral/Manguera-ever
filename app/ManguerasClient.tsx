@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { MangueraTable } from "./components/MangueraTable";
 import { AddMangueraModal } from "./components/AddMangueraModal";
+import { AddPersonalModal } from "./components/AddPersonalModal";
 import { SelectPersonal } from "./components/SelectPersonal";
 
 type Manguera = {
@@ -25,24 +26,32 @@ export function ManguerasClient({
   personal: Personal[];
 }) {
   const [modalAbierto, setModalAbierto] = useState(false);
-  // Estado elevado al padre para compartir entre componentes
+  const [modalPersonal, setModalPersonal] = useState(false);
   const [personalSeleccionado, setPersonalSeleccionado] = useState<number | "">(
     "",
   );
 
   return (
     <main className="container mx-auto p-4">
-      {/* Header con título, select y botón */}
       <div className="flex flex-col lg:flex-row gap-4 items-start lg:items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">Control de Mangueras</h1>
 
         <div className="flex flex-row lg:flex-row gap-4 items-start lg:items-center w-full lg:w-auto">
-          {/* Componente reutilizable */}
-          <SelectPersonal
-            personal={personal}
-            value={personalSeleccionado}
-            onChange={setPersonalSeleccionado}
-          />
+          {/* Select + botón "+" juntos */}
+          <div className="flex items-center gap-1">
+            <SelectPersonal
+              personal={personal}
+              value={personalSeleccionado}
+              onChange={setPersonalSeleccionado}
+            />
+            <button
+              onClick={() => setModalPersonal(true)}
+              className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition-colors text-lg"
+              title="Agregar personal"
+            >
+              +
+            </button>
+          </div>
 
           <button
             onClick={() => setModalAbierto(true)}
@@ -53,21 +62,23 @@ export function ManguerasClient({
         </div>
       </div>
 
-      {/* Alerta de validación */}
       {!personalSeleccionado && personal.length > 0 && (
         <div className="mb-4 bg-yellow-50 border border-yellow-200 text-yellow-800 px-4 py-2 rounded-lg text-sm">
           ⚠️ Seleccioná a alguien para poder cortar mangueras
         </div>
       )}
 
-      {/* Modal */}
       <AddMangueraModal
         isOpen={modalAbierto}
         onClose={() => setModalAbierto(false)}
         codigoPrellenado=""
       />
 
-      {/* Tabla recibe el usuario seleccionado */}
+      <AddPersonalModal
+        isOpen={modalPersonal}
+        onClose={() => setModalPersonal(false)}
+      />
+
       <MangueraTable
         mangueras={mangueras}
         personal={personal}
@@ -76,3 +87,4 @@ export function ManguerasClient({
     </main>
   );
 }
+

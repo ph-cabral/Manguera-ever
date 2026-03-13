@@ -30,7 +30,7 @@ export async function addMangueraAction(formData: FormData) {
   const ubicacion = (formData.get("ubicacion") as string).toUpperCase().trim();
   const personalId = parseInt(formData.get("personalId") as string);
 
-  if (!codigo || isNaN(metros) || metros <= 0 || isNaN(personalIdId)) {
+  if (!codigo || isNaN(metros) || metros <= 0 || isNaN(personalId)) {
     throw new Error("Datos inválidos");
   }
 

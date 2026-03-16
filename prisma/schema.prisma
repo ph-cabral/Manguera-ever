@@ -22,7 +22,7 @@ model Manguera {
   id          Int      @id @default(autoincrement())
   codigo      String   @unique  // ej: "AG-001" (Agua 1/2")
   metros       Int      @default(0)  // metros disponibles
-  ubicacion   String?  // ej: "Estante 3, Depósito A"
+  ubicacion   String?  @default("") // ej: "Estante 3, Depósito A"
   cortes      Corte[]  // Relación: una manguera tiene muchos cortes históricos
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

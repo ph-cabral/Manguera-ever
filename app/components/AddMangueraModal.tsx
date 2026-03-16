@@ -142,8 +142,8 @@ export function AddMangueraModal({
             </label>
             <input
               type="number"
-              min="1"
-              step="1"
+              min=".1"
+              step=".1"
               value={metro}
               onChange={(e) => setMetro(e.target.value)}
               placeholder="Ej: 50"

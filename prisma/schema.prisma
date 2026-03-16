@@ -26,7 +26,7 @@ model personal {
 model manguera {
   id          Int      @id @default(autoincrement())
   codigo      String     // ej: "AG-001" (Agua 1/2")
-  metros       Int      @default(0)  // metros disponibles
+  metros      float      @default(0)  // metros disponibles
   ubicacion   String?  @default("") // ej: "Estante 3, Depósito A"
   cortes      corte[]  // Relación: una manguera tiene muchos cortes históricos
   createdAt   DateTime @default(now())
@@ -39,7 +39,7 @@ model manguera {
 
 model corte {
   id          Int      @id @default(autoincrement())
-  metros      Int      // Cuántos metros se cortaron/sacaron
+  metros      float      // Cuántos metros se cortaron/sacaron
   fecha       DateTime @default(now())
   observacion String?  // Opcional: "Para cliente X", "Urgente", etc.
   

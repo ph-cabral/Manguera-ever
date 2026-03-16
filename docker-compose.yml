@@ -7,7 +7,7 @@ services:
     container_name: mangueras_ever
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql://n8n:3v3rW3ar@n8n_sql:5432/fabrica_db?schema=public
+      DATABASE_URL: postgresql://n8n:3v3rW3ar@n8n_sql:5432/n8n?schema=fabrica
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
       NODE_ENV: production
       # Si tenés variables de NextAuth u otras:

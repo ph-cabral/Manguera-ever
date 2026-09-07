@@ -49,6 +49,11 @@ export async function GET(req: NextRequest) {
   const qs = new URLSearchParams({ desde, hasta, sort, sortDir, page, pageSize });
   if (q) qs.set("q", q);
   if (linea) qs.set("linea", linea);
+  // lineaExacta=1: la línea se compara por igualdad, no como substring. Lo
+  // manda el drill-down de la vista, donde el nombre sale de una fila real
+  // (2026-09-07) — sin esto, entrar a una línea cuyo nombre es
+  // prefijo de otra arrastraría los artículos de las dos.
+  if (sp.get("lineaExacta") === "1") qs.set("lineaExacta", "1");
   try {
     const res = await fetch(
       `${API_URL}/compras/consumo-articulos?${qs.toString()}`,

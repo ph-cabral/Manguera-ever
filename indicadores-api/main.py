@@ -550,15 +550,19 @@ def compras_consumo_articulos(
     pageSize: int = Query(20, ge=1, le=200),
     q: str | None = Query(None),
     linea: str | None = Query(None),
+    lineaExacta: int = Query(0),
 ):
     """Vendido/promedio/máximo/mínimo>0 y stock por artículo, para los
     artículos que matchean `q` (código) y/o `linea` (nombre de Stk_Nivel1) — al menos uno
     de los dos es obligatorio (2026-08-12, ver NOTA en
-    fetch_consumo_articulos): sin filtro se agregaría TODO el catálogo."""
+    fetch_consumo_articulos): sin filtro se agregaría TODO el catálogo.
+
+    `lineaExacta=1` compara la línea por igualdad en vez de substring — lo usa
+    el drill-down de la vista, donde el nombre sale de una fila real."""
     try:
         return fetch_consumo_articulos(
             desde, hasta, sort=sort, sort_dir=sortDir, page=page, page_size=pageSize,
-            q=q, linea=linea,
+            q=q, linea=linea, linea_exacta=bool(lineaExacta),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -577,6 +581,7 @@ def compras_consumo_articulos_export(
     sortDir: str = Query("desc"),
     q: str | None = Query(None),
     linea: str = Query(...),
+    lineaExacta: int = Query(0),
 ):
     """Igual que /compras/consumo-articulos pero sin paginar: TODOS los
     artículos de la línea (y opcionalmente código) elegida, para volcar a
@@ -584,17 +589,22 @@ def compras_consumo_articulos_export(
     try:
         return fetch_consumo_articulos(
             desde, hasta, sort=sort, sort_dir=sortDir,
-            q=q, linea=linea, export=True,
+            q=q, linea=linea, linea_exacta=bool(lineaExacta), export=True,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 
-# ── Compras: consumo mensual por LÍNEA (botón "Líneas" de /compras/consumo) ──
+# ── Compras: consumo mensual por LÍNEA (pantalla de entrada de /compras/consumo)
 # 2026-09-07: mismas métricas que /compras/consumo-articulos
 # pero agregadas por línea (Stk_Nivel1) en vez de por artículo. Como el resto
 # de la vista, suma SOLO artículos nacionales.
+#
+# SIN filtro obligatorio, a diferencia de /compras/consumo-articulos: es la
+# pantalla que abre la vista, tiene que listar las 48 líneas de una. Lo que
+# viaja de SQL a Python es chico y no crece con el catálogo (ver docstring de
+# fetch_consumo_lineas).
 @app.get("/compras/consumo-lineas")
 def compras_consumo_lineas(
     desde: str = Query(...),
@@ -605,14 +615,14 @@ def compras_consumo_lineas(
     pageSize: int = Query(20, ge=1, le=200),
     q: str | None = Query(None),
     linea: str | None = Query(None),
+    lineaExacta: int = Query(0),
 ):
     """Vendido/promedio/máximo/mínimo>0 y stock por LÍNEA, sobre artículos
-    nacionales. Mismo requisito que la vista de artículos: al menos uno de
-    `q` (código) o `linea`."""
+    nacionales. `q`/`linea` son opcionales: sin filtro devuelve todas."""
     try:
         return fetch_consumo_lineas(
             desde, hasta, sort=sort, sort_dir=sortDir, page=page, page_size=pageSize,
-            q=q, linea=linea,
+            q=q, linea=linea, linea_exacta=bool(lineaExacta),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -627,13 +637,14 @@ def compras_consumo_lineas_export(
     sort: str = Query("totalVendido"),
     sortDir: str = Query("desc"),
     q: str | None = Query(None),
-    linea: str = Query(...),
+    linea: str | None = Query(None),
+    lineaExacta: int = Query(0),
 ):
     """Igual que /compras/consumo-lineas pero sin paginar, para volcar a Excel."""
     try:
         return fetch_consumo_lineas(
             desde, hasta, sort=sort, sort_dir=sortDir,
-            q=q, linea=linea, export=True,
+            q=q, linea=linea, linea_exacta=bool(lineaExacta), export=True,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -12,7 +12,8 @@ export const maxDuration = 90;
 // Excel" (2026-09-07). Mismo patrón que
 // /api/compras/consumo-articulos/export: el .xlsx se arma acá.
 //
-// Requiere 'linea', igual que el export de artículos.
+// NO requiere 'linea' (a diferencia del export de artículos): son ~48 filas,
+// exportar el listado completo de líneas es justamente lo útil acá.
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const desde = sp.get("desde");
@@ -21,17 +22,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Faltan 'desde'/'hasta'" }, { status: 400 });
   }
   const linea = sp.get("linea")?.trim() || "";
-  if (!linea) {
-    return NextResponse.json(
-      { error: "Elegí una línea para exportar" },
-      { status: 400 },
-    );
-  }
   const q = sp.get("q")?.trim() || null;
   const sort = sp.get("sort") ?? "totalVendido";
   const sortDir = sp.get("sortDir") ?? "desc";
-  const qs = new URLSearchParams({ desde, hasta, sort, sortDir, linea });
+  const qs = new URLSearchParams({ desde, hasta, sort, sortDir });
+  if (linea) qs.set("linea", linea);
   if (q) qs.set("q", q);
+  if (sp.get("lineaExacta") === "1") qs.set("lineaExacta", "1");
 
   try {
     const res = await fetch(
@@ -64,13 +61,15 @@ export async function GET(req: NextRequest) {
     const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" }) as Buffer;
 
     const fecha = new Date().toISOString().slice(0, 10);
-    const lineaSlug = linea.replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "") || "linea";
+    const lineaSlug = linea
+      ? `_${linea.replace(/[^a-z0-9]+/gi, "_").replace(/^_+|_+$/g, "")}`
+      : "";
     return new NextResponse(buf, {
       status: 200,
       headers: {
         "Content-Type":
           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "Content-Disposition": `attachment; filename="consumo_lineas_${lineaSlug}_${fecha}.xlsx"`,
+        "Content-Disposition": `attachment; filename="consumo_lineas${lineaSlug}_${fecha}.xlsx"`,
       },
     });
   } catch (error) {

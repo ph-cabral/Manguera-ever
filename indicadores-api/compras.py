@@ -813,9 +813,33 @@ FROM EVERWEAR.dbo.[StkFer_Articulos] s
 INNER JOIN EVERWEAR.dbo.[Stk_TiposArticulos] t_n ON t_n.CodigoTipo    = s.NacionalImportado
 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s.ArticuloPatron
 LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]        n1 ON n1.Nivel1         = ap.Nivel1
-WHERE LTRIM(RTRIM(n1.Detalle)) LIKE ?
-  AND t_n.Descripcion = 'Nacional'
+WHERE t_n.Descripcion = 'Nacional'
+  {cond}
 """
+
+
+def _cond_linea(linea: str, exacta: bool) -> tuple[str, list]:
+    """Fragmento de WHERE + parámetros para filtrar por línea sobre
+    LTRIM(RTRIM(n1.Detalle)). Devuelve ("", []) si no hay línea.
+
+    Dos modos (2026-09-07, al armar el drill-down
+    Líneas → Artículos → Detalle de /compras/consumo):
+      · `exacta=False` — substring (LIKE %...%). Es lo que escribe el usuario
+        a mano en el input de línea.
+      · `exacta=True`  — igualdad. Lo usa el drill-down, donde el nombre sale
+        de una fila real y no de lo tipeado: con LIKE, entrar a una línea cuyo
+        nombre es prefijo de otra arrastraría los artículos de las dos.
+        `LINEA_SIN_ASIGNAR` no es un nombre del catálogo sino el rótulo de los
+        artículos sin Nivel1 resuelto, así que ahí se filtra por NULL/vacío.
+
+    El texto del usuario nunca se interpola: siempre viaja como parámetro."""
+    if not linea:
+        return "", []
+    if not exacta:
+        return "AND LTRIM(RTRIM(n1.Detalle)) LIKE ?", [f"%{linea}%"]
+    if linea == LINEA_SIN_ASIGNAR:
+        return "AND (n1.Detalle IS NULL OR LTRIM(RTRIM(n1.Detalle)) = '')", []
+    return "AND LTRIM(RTRIM(n1.Detalle)) = ?", [linea]
 
 # Líneas del catálogo con cantidad de artículos en cada una — para el
 # datalist del input "línea" de /compras/consumo (
@@ -871,6 +895,7 @@ def fetch_consumo_articulos(
     page_size: int = 20,
     q: str | None = None,
     linea: str | None = None,
+    linea_exacta: bool = False,
     export: bool = False,
 ):
     """Igual que fetch_consumo_articulo pero para TODOS los artículos a la
@@ -999,7 +1024,8 @@ def fetch_consumo_articulos(
         # sola consulta al catálogo (NO con un IN de los `codigos` candidatos,
         # que puede ser una lista larga) y se intersecta acá en Python.
         if linea_norm:
-            cur.execute(SQL_CODIGOS_POR_LINEA, (f"%{linea_norm}%",))
+            cond, params = _cond_linea(linea_norm, linea_exacta)
+            cur.execute(SQL_CODIGOS_POR_LINEA.format(cond=cond), params)
             set_linea = {(str(r[0] or "")).strip() for r in cur.fetchall()}
             codigos = [c for c in codigos if c in set_linea]
 
@@ -1159,25 +1185,25 @@ def fetch_consumo_lineas(
     page_size: int = 20,
     q: str | None = None,
     linea: str | None = None,
+    linea_exacta: bool = False,
     export: bool = False,
 ):
     """Misma tabla que fetch_consumo_articulos pero agregada por LÍNEA
     (Stk_Nivel1.Detalle), sobre artículos NACIONALES únicamente.
 
-    Mismo contrato que la vista de artículos: `q` (substring de código) y
-    `linea` (substring del nombre de la línea) se combinan con AND y hace
-    falta AL MENOS UNO — no porque la respuesta sea pesada (son decenas de
-    filas), sino para mantener un solo criterio entre las dos vistas y no
-    dejar una puerta abierta a escanear el rango completo sin querer.
+    SIN FILTRO OBLIGATORIO, a diferencia de fetch_consumo_articulos
+    (2026-09-07): esta es la pantalla de entrada de
+    /compras/consumo, así que tiene que abrir mostrando TODAS las líneas. Se
+    puede porque lo que viaja de SQL Server a Python es chico y no crece con
+    el catálogo: la agregación por (línea, mes, comprobante, estado) da ~2.150
+    filas para 6 meses de toda la empresa, y el universo son 48 líneas. El
+    filtro de artículos, en cambio, sigue exigiendo `q`/`linea` porque ahí sí
+    la respuesta escala con el catálogo (ver la NOTA de rendimiento allá).
 
-    `export=True` devuelve todas las líneas del filtro sin paginar y exige
-    `linea`, igual que la vista de artículos."""
+    `q` (substring de código) y `linea` se combinan con AND cuando vienen.
+    `export=True` devuelve todas las líneas del filtro sin paginar."""
     q_norm = (q or "").strip()
     linea_norm = (linea or "").strip()
-    if not q_norm and not linea_norm:
-        raise ValueError("Ingresá 'q' (código) o 'linea' para buscar")
-    if export and not linea_norm:
-        raise ValueError("Elegí una línea para exportar")
 
     meses = _meses_rango(str(desde)[:7], str(hasta)[:7])
     y1, m1 = int(meses[0][:4]), int(meses[0][5:7])
@@ -1198,15 +1224,14 @@ def fetch_consumo_lineas(
     # aparte — el texto del cliente NUNCA se interpola en el SQL.
     frag_q_reng = "AND r.CodArticu LIKE ?" if q_norm else ""
     frag_q_stock = "AND a.CodArticulo LIKE ?" if q_norm else ""
-    frag_linea = "AND LTRIM(RTRIM(n1.Detalle)) LIKE ?" if linea_norm else ""
+    frag_linea, params_linea = _cond_linea(linea_norm, linea_exacta)
     params_reng: list = [d1n, d2n]
     params_stock: list = []
     if q_norm:
         params_reng.append(f"%{q_norm}%")
         params_stock.append(f"%{q_norm}%")
-    if linea_norm:
-        params_reng.append(f"%{linea_norm}%")
-        params_stock.append(f"%{linea_norm}%")
+    params_reng.extend(params_linea)
+    params_stock.extend(params_linea)
 
     ventas: dict[str, dict[str, float]] = {}
     stock_linea: dict[str, float] = {}

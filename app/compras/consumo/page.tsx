@@ -4,7 +4,7 @@ import {
   Loader2, AlertTriangle, Search, LineChart, Package, Sigma, Divide,
   ArrowUpToLine, ArrowDownToLine, Warehouse, Table2,
   ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRight, Download,
-  Layers, Flag,
+  Flag,
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import KpiCard from "@/app/rrhh/components/KpiCard";
@@ -26,39 +26,46 @@ import { abrirPicker } from "@/components/ui/abrirPicker";
 // 20 y ordenable por Código/Stock/Vendido/Promedio/Máximo/Mínimo (clic en el
 // encabezado). Fuente: /api/compras/consumo-articulos (plural).
 //
-// Rediseño 2026-08-12 (mismo día que lo de arriba):
-//   · La tabla es ahora la vista principal (ya no hay toggle Individual/Tabla).
-//   · Filtro por Código y filtro por Línea (StkFer_ArtParamet.Nivel1) se
-//     combinan por AND, pero NINGUNO es obligatorio por separado — con la
-//     salvedad de que hace falta AL MENOS UNO de los dos antes de cargar
-//     nada (evita agregar el catálogo completo, ver NOTA en
-//     fetch_consumo_articulos, indicadores-api/compras.py).
-//   · El input de línea tiene un datalist con la cantidad de artículos por
-//     línea (fuente: /api/compras/lineas) — así se ve en la propia vista
-//     cuánto pesa cada línea, sin adivinar de antemano si conviene dropdown
-//     o texto libre.
-//   · La vista "individual" (detalle mensual + stock por depósito de UN
-//     artículo) ya no tiene su propio formulario de código: se abre haciendo
-//     clic en una fila de la tabla, con botón "Volver a la tabla".
+// Rediseño 2026-08-12: la tabla pasó a ser la vista principal (se fue el
+// toggle Individual/Tabla) y el detalle mensual dejó de tener formulario
+// propio — se abre haciendo clic en una fila.
 //
-// Export a Excel (2026-08-12): botón "Exportar Excel" en la
-// vista "Tabla", trae TODOS los artículos que matchean el filtro (sin
-// paginar) vía /api/compras/consumo-articulos/export. Habilitado SOLO si hay
-// una línea aplicada (appliedLinea) — código solo no alcanza, para no
-// exportar por error una porción enorme del catálogo. Mismo chequeo también
-// del lado del servidor (route.ts e indicadores-api/compras.py).
+// Export a Excel (2026-08-12): botón "Exportar Excel", trae TODAS las filas
+// del filtro actual (sin paginar) vía .../export. Mismo patrón
+// fetch→blob→<a download> que /deposito/stock.
 //
-// Agrupación Artículos ↔ Líneas + recorte a NACIONALES (2026-09-07):
-//   · Botón en la barra de filtros que alterna la unidad de la tabla entre
-//     ARTÍCULO y LÍNEA (Stk_Nivel1), manteniendo las mismas columnas y el
-//     mismo criterio de "vendido": total, promedio mensual, máximo, mínimo>0,
-//     stock y coberturas. En Líneas, máximo/mínimo son del mes de la línea
-//     entera (suma de sus artículos), no el máximo de un artículo suelto.
+// DRILL-DOWN de 3 niveles + recorte a NACIONALES (2026-09-07):
+//
+//   Líneas → Artículos de esa línea → Detalle mensual del artículo
+//
+//   · "Líneas" es la pantalla de entrada y NO pide filtro: lista todas las
+//     líneas (Stk_Nivel1) con artículos nacionales, con las mismas columnas y
+//     el mismo criterio de "vendido" que la tabla de artículos — total,
+//     promedio mensual, máximo, mínimo>0, stock y coberturas. Ojo: acá
+//     máximo/mínimo son del mes de la LÍNEA ENTERA (la suma de sus
+//     artículos), no el máximo de un artículo suelto.
 //     Fuente: /api/compras/consumo-lineas (+ /export).
-//     Clic en una fila de Líneas → vuelve a Artículos con esa línea aplicada.
+//   · Clic en una línea baja a sus artículos, con la línea comparada por
+//     IGUALDAD (lineaExacta=1) y no como substring: el nombre sale de una
+//     fila real, y con LIKE una línea cuyo nombre es prefijo de otra
+//     arrastraría los artículos de las dos. La fila "SIN LÍNEA" también se
+//     puede abrir — el backend la entiende como "sin Nivel1 resuelto".
+//   · Clic en un artículo baja al detalle mensual + stock por depósito.
+//   · Botón "Volver" + migas en cada nivel; `volver` sube de a un escalón y
+//     limpia lo que dejó de aplicar (ver esa función).
+//   · Un solo buscador por nivel: arriba se busca la línea (con datalist de
+//     /api/compras/lineas y la cantidad de artículos de cada una), adentro de
+//     una línea se busca el código. Escribir no dispara nada: hay que
+//     presionar Refrescar o Enter.
 //   · TODO lo que suma la vista (las dos tablas, el detalle y el contador del
 //     datalist de líneas) se recorta a artículos de tipo NACIONAL. Se hace en
 //     SQL, no en el front. Importados, Originales y Fabriles quedan afuera.
+//
+// La tabla de ARTÍCULOS sí sigue exigiendo filtro del lado del backend (la
+// línea del drill-down alcanza): sin nada agregaría el catálogo completo, que
+// es lo que ya tiró abajo el proceso una vez — ver la NOTA de rendimiento en
+// fetch_consumo_articulos, indicadores-api/compras.py. La de LÍNEAS no lo
+// necesita porque lo que viaja no crece con el catálogo.
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface MesRow {
@@ -108,8 +115,12 @@ const mesLocal = (retro = 0) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 };
 
-// ── Vista "Tabla" (todos los artículos del rango) ───────────────────────────
-type Vista = "individual" | "tabla";
+// ── Niveles del drill-down (2026-09-07) ────────────────────
+// "lineas" es la pantalla de entrada; se baja a "articulos" (los de una línea)
+// y de ahí a "detalle" (el mensual de un artículo). Antes eran dos vistas
+// sueltas (tabla ↔ individual) más un botón para alternar la unidad.
+type Nivel = "lineas" | "articulos" | "detalle";
+
 interface ArticuloRow {
   codigo: string;
   nombre: string | null;
@@ -130,13 +141,14 @@ interface RespTabla {
   articulos: ArticuloRow[];
 }
 
-// ── Vista "Tabla" agrupada por LÍNEA (2026-09-07) ──────────
+// ── Tabla por LÍNEA (2026-09-07) ───────────────────────────
 // Mismas métricas que ArticuloRow, con la línea (Stk_Nivel1.Detalle) como
 // unidad. `articulos` = cuántos artículos nacionales de esa línea tienen
 // registro de stock — el universo que suma la columna Stock.
-type Agrupacion = "articulos" | "lineas";
+//
 // Rótulo de los artículos sin Nivel1 resuelto — tiene que coincidir con
-// LINEA_SIN_ASIGNAR de indicadores-api/compras.py.
+// LINEA_SIN_ASIGNAR de indicadores-api/compras.py, porque el backend lo
+// reconoce como filtro (ver _cond_linea) para poder entrar a ese bolsón.
 const LINEA_SIN_LINEA = "SIN LÍNEA";
 interface LineaRow {
   linea: string;
@@ -159,8 +171,8 @@ interface RespLineas {
 }
 
 // "codigo" solo aplica a la tabla de artículos y "linea" solo a la de líneas;
-// el resto de las claves son comunes a las dos (ver toggleAgrupacion, que
-// traduce una por la otra al cambiar de unidad).
+// el resto de las claves son comunes a las dos. Al cambiar de nivel se traduce
+// una por la otra (ver abrirLinea/volver) para no perder el orden elegido.
 type SortKey = "codigo" | "linea" | "stock" | "totalVendido" | "promedio" | "maximo" | "minimo";
 const PAGE_SIZE = 20;
 
@@ -218,18 +230,19 @@ export default function ComprasConsumoPage() {
   // Depósitos tildados para el stock (default: todos)
   const [deps, setDeps] = useState<Set<number>>(() => new Set([1, 2, 3]));
 
-  // Vista: "tabla" (todos los artículos que matchean el filtro, paginados de
-  // a 20 y ordenables — vista principal) o "individual" (detalle de UN
-  // artículo, se abre haciendo clic en una fila de la tabla). La tabla se
-  // ordena/pagina/filtra EN EL SERVIDOR (2026-08-12: traer el catálogo
-  // completo al navegador y paginar ahí tiró abajo el proceso de
-  // indicadores-api con un catálogo grande) — cada cambio de página, orden o
-  // búsqueda dispara un fetch nuevo con esos parámetros.
-  const [vista, setVista] = useState<Vista>("tabla");
-  // Unidad de la tabla: artículo (default) o línea (2026-09-07).
-  // Comparten filtros, rango, orden, paginación y estados de carga/error —
-  // solo cambia el endpoint y las columnas de identidad de la fila.
-  const [agrupacion, setAgrupacion] = useState<Agrupacion>("articulos");
+  // Nivel del drill-down (2026-09-07). La vista abre en
+  // "lineas" y se baja de a un escalón: línea → sus artículos → el detalle
+  // mensual de uno. `volver` sube de a uno y limpia lo que corresponde.
+  //
+  // Las dos tablas se ordenan/paginan/filtran EN EL SERVIDOR (2026-08-12:
+  // traer el catálogo completo al navegador y paginar ahí tiró abajo el
+  // proceso de indicadores-api con un catálogo grande) — cada cambio de
+  // página, orden o búsqueda dispara un fetch nuevo con esos parámetros.
+  const [nivel, setNivel] = useState<Nivel>("lineas");
+  // Línea en la que se entró (nivel "articulos"/"detalle"). Se compara por
+  // IGUALDAD contra el catálogo (lineaExacta=1), no como substring: sale de
+  // una fila real, no de lo que escribió el usuario.
+  const [lineaSel, setLineaSel] = useState("");
   const [tablaData, setTablaData] = useState<RespTabla | null>(null);
   const [lineasData, setLineasData] = useState<RespLineas | null>(null);
   const [tablaLoading, setTablaLoading] = useState(false);
@@ -259,21 +272,13 @@ export default function ComprasConsumoPage() {
       .catch(() => setLineas([]));
   }, []);
 
-  // Código y línea se combinan (AND), pero ninguno es obligatorio por
-  // separado — hace falta AL MENOS UNO APLICADO antes de cargar nada. Mira
-  // appliedCod/appliedLinea (lo tipeado no cuenta) — así cambiar el
-  // rango/orden/página con un filtro ya aplicado sigue refrescando solo,
-  // pero tipear código/línea nunca dispara nada por sí mismo.
-  const tieneFiltro = !!(appliedCod || appliedLinea);
-  const tieneEntrada = !!(filtroCod.trim() || filtroLinea.trim()); // habilita el botón Refrescar
+  // Filtro de texto activo en el nivel actual: en "lineas" se busca por
+  // nombre de línea, en "articulos" por código. El otro input no se muestra,
+  // así que su valor aplicado no participa de la consulta.
+  const filtroActivo = nivel === "lineas" ? filtroLinea : filtroCod;
+  const tieneEntrada = !!filtroActivo.trim(); // habilita el botón Refrescar
 
   const loadTabla = useCallback(async () => {
-    if (!tieneFiltro) {
-      setTablaData(null);
-      setLineasData(null);
-      setTablaError(null);
-      return;
-    }
     setTablaLoading(true);
     setTablaError(null);
     try {
@@ -285,20 +290,36 @@ export default function ComprasConsumoPage() {
         page: String(page),
         pageSize: String(PAGE_SIZE),
       });
-      if (appliedCod) params.set("q", appliedCod);
-      if (appliedLinea) params.set("linea", appliedLinea);
-      // Mismo contrato de query en las dos unidades — solo cambia el endpoint.
-      const endpoint =
-        agrupacion === "lineas"
-          ? "/api/compras/consumo-lineas"
-          : "/api/compras/consumo-articulos";
-      const res = await fetch(`${endpoint}?${params.toString()}`, { cache: "no-store" });
-      const j = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-      if (agrupacion === "lineas") {
+      if (nivel === "lineas") {
+        // Sin filtro obligatorio: la pantalla de entrada lista TODAS las
+        // líneas. `appliedLinea` acá es lo que el usuario buscó a mano, así
+        // que va como substring.
+        if (appliedLinea) params.set("linea", appliedLinea);
+        const res = await fetch(`/api/compras/consumo-lineas?${params.toString()}`, {
+          cache: "no-store",
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
         setLineasData(j);
         setTablaData(null);
       } else {
+        // Artículos de la línea en la que se entró. La línea va por igualdad
+        // (lineaExacta=1) y el código, si lo escribieron, como substring.
+        // Sin línea no hay nada que pedir (el backend exige filtro): no
+        // debería pasar por la UI, pero evita un 400 si el estado queda raro.
+        if (!lineaSel) {
+          setTablaData(null);
+          setLineasData(null);
+          return;
+        }
+        params.set("linea", lineaSel);
+        params.set("lineaExacta", "1");
+        if (appliedCod) params.set("q", appliedCod);
+        const res = await fetch(`/api/compras/consumo-articulos?${params.toString()}`, {
+          cache: "no-store",
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
         setTablaData(j);
         setLineasData(null);
       }
@@ -310,50 +331,49 @@ export default function ComprasConsumoPage() {
       setTablaLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshTick solo fuerza el refetch, no participa del fetch en sí
-  }, [desde, hasta, sortKey, sortDir, page, appliedCod, appliedLinea, tieneFiltro, agrupacion, refreshTick]);
+  }, [desde, hasta, sortKey, sortDir, page, appliedCod, appliedLinea, lineaSel, nivel, refreshTick]);
 
-  // Carga automática cada vez que cambia el rango/orden/página, o cuando se
-  // aplica un filtro nuevo (Refrescar) — mientras se esté en la vista
-  // "tabla". loadTabla ya no hace nada si no hay filtro APLICADO (ver
-  // tieneFiltro arriba), así que tipear solo no alcanza para disparar nada.
+  // Carga automática al entrar a un nivel de tabla y cada vez que cambia el
+  // rango/orden/página, o cuando se aplica un filtro nuevo (Refrescar).
+  // El nivel "detalle" tiene su propio load (ver más abajo).
   useEffect(() => {
-    if (vista === "tabla") loadTabla();
-  }, [vista, loadTabla]);
+    if (nivel !== "detalle") loadTabla();
+  }, [nivel, loadTabla]);
 
   // Único disparador de una búsqueda nueva por texto (
   // 2026-08-12): aplica lo tipeado en código/línea y fuerza el refetch
   // (refreshTick) — así "Refrescar" siempre trae datos frescos, incluso
   // repitiendo el mismo filtro.
   const handleRefrescar = useCallback(() => {
-    setAppliedCod(filtroCod.trim());
-    setAppliedLinea(filtroLinea.trim());
+    // Solo se aplica el input del nivel en el que se está: el otro filtro no
+    // se muestra y aplicarlo a ciegas cambiaría la consulta sin que se vea.
+    if (nivel === "lineas") setAppliedLinea(filtroLinea.trim());
+    else setAppliedCod(filtroCod.trim());
     setPage(1);
     setRefreshTick((t) => t + 1);
-  }, [filtroCod, filtroLinea]);
+  }, [nivel, filtroCod, filtroLinea]);
 
-  // Exportar a Excel — SOLO habilitado con una línea aplicada (appliedLinea),
-  // código solo no alcanza (2026-08-12). Trae TODOS los
-  // artículos del filtro actual (desde/hasta/orden/código/línea), sin
-  // paginar — mismo patrón fetch→blob→<a download> que /deposito/stock.
+  // Exportar a Excel lo que se está viendo, sin paginar — mismo patrón
+  // fetch→blob→<a download> que /deposito/stock. En "lineas" no hace falta
+  // filtro (son ~48 filas); en "articulos" la línea siempre está puesta por
+  // el drill-down, así que el botón está habilitado en los dos niveles.
   const [exporting, setExporting] = useState(false);
   const handleExport = useCallback(async () => {
-    if (!appliedLinea) return;
     setExporting(true);
     setTablaError(null);
     try {
-      const params = new URLSearchParams({
-        desde,
-        hasta,
-        sort: sortKey,
-        sortDir,
-        linea: appliedLinea,
-      });
-      if (appliedCod) params.set("q", appliedCod);
-      // Se exporta lo que se está viendo: artículos o líneas.
-      const endpoint =
-        agrupacion === "lineas"
-          ? "/api/compras/consumo-lineas/export"
-          : "/api/compras/consumo-articulos/export";
+      const params = new URLSearchParams({ desde, hasta, sort: sortKey, sortDir });
+      const enLineas = nivel === "lineas";
+      if (enLineas) {
+        if (appliedLinea) params.set("linea", appliedLinea);
+      } else {
+        params.set("linea", lineaSel);
+        params.set("lineaExacta", "1");
+        if (appliedCod) params.set("q", appliedCod);
+      }
+      const endpoint = enLineas
+        ? "/api/compras/consumo-lineas/export"
+        : "/api/compras/consumo-articulos/export";
       const res = await fetch(`${endpoint}?${params.toString()}`);
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
@@ -363,7 +383,8 @@ export default function ComprasConsumoPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `consumo_${agrupacion === "lineas" ? "lineas_" : ""}${appliedLinea}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const slug = (enLineas ? appliedLinea || "todas" : lineaSel).replace(/[^\w]+/g, "_");
+      a.download = `consumo_${enLineas ? "lineas" : "articulos"}_${slug}_${new Date().toISOString().slice(0, 10)}.xlsx`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -371,12 +392,12 @@ export default function ComprasConsumoPage() {
     } finally {
       setExporting(false);
     }
-  }, [desde, hasta, sortKey, sortDir, appliedLinea, appliedCod, agrupacion]);
+  }, [desde, hasta, sortKey, sortDir, nivel, appliedLinea, appliedCod, lineaSel]);
 
-  // Abre el detalle de un artículo (clic en una fila de la tabla).
+  // Abre el detalle de un artículo (clic en una fila de la tabla de artículos).
   const abrirDetalle = useCallback((codigo: string) => {
     setCod(codigo);
-    setVista("individual");
+    setNivel("detalle");
   }, []);
 
   const toggleSort = useCallback(
@@ -392,39 +413,55 @@ export default function ComprasConsumoPage() {
     [sortKey],
   );
 
-  // Alterna la unidad de la tabla (2026-09-07). Vuelve a la
-  // página 1 y traduce el orden por identidad de fila entre las dos unidades
-  // ("Código" ↔ "Línea"), que es la única clave que no existe en ambas.
-  const toggleAgrupacion = useCallback(() => {
-    const next: Agrupacion = agrupacion === "articulos" ? "lineas" : "articulos";
-    setAgrupacion(next);
-    setSortKey((k) =>
-      next === "lineas" ? (k === "codigo" ? "linea" : k) : k === "linea" ? "codigo" : k,
-    );
-    setPage(1);
-  }, [agrupacion]);
-
-  // Clic en una fila de la tabla de líneas: aplica esa línea como filtro y
-  // baja a la tabla de artículos — el mismo gesto de "abrir" que en la tabla
-  // de artículos lleva al detalle mensual.
+  // Clic en una fila de la tabla de líneas: baja al nivel de artículos de esa
+  // línea. Ojo: "SIN LÍNEA" SÍ se puede abrir — el backend lo entiende como
+  // "artículos sin Nivel1 resuelto" (ver _cond_linea en compras.py), así que
+  // ese bolsón también es explorable.
   const abrirLinea = useCallback((nombreLinea: string) => {
-    // "SIN LÍNEA" es el rótulo de los artículos sin Nivel1 resuelto, no un
-    // nombre real del catálogo: usarlo como filtro no traería nada, así que
-    // esa fila no abre nada (ver LINEA_SIN_ASIGNAR en compras.py).
-    if (nombreLinea === LINEA_SIN_LINEA) return;
-    setFiltroLinea(nombreLinea);
-    setAppliedLinea(nombreLinea);
-    setAgrupacion("articulos");
+    setLineaSel(nombreLinea);
+    setNivel("articulos");
+    // El nivel de artículos arranca limpio: sin código escrito de antes y
+    // ordenado por lo vendido, como abre la tabla de líneas.
+    setFiltroCod("");
+    setAppliedCod("");
     setSortKey((k) => (k === "linea" ? "codigo" : k));
     setPage(1);
   }, []);
 
+  // Vuelve a la tabla de artículos de la línea (desde el detalle).
+  const irAArticulos = useCallback(() => {
+    setNivel("articulos");
+    setCod("");
+    setData(null);
+    setError(null);
+  }, []);
+
+  // Vuelve a la tabla de líneas, desde cualquier nivel — limpia la línea
+  // elegida y el filtro de código, que solo tenían sentido adentro de una.
+  const irALineas = useCallback(() => {
+    setNivel("lineas");
+    setLineaSel("");
+    setCod("");
+    setData(null);
+    setError(null);
+    setFiltroCod("");
+    setAppliedCod("");
+    setSortKey((k) => (k === "codigo" ? "linea" : k));
+    setPage(1);
+  }, []);
+
+  // Botón "Volver": sube UN escalón.
+  const volver = useCallback(() => {
+    if (nivel === "detalle") irAArticulos();
+    else irALineas();
+  }, [nivel, irAArticulos, irALineas]);
+
   const filasTabla = tablaData?.articulos ?? [];
   const filasLineas = lineasData?.lineas ?? [];
-  // Datos y paginación de la tabla que se está mostrando, sea cual sea la unidad.
-  const datosVisibles: RespTabla | RespLineas | null =
-    agrupacion === "lineas" ? lineasData : tablaData;
-  const hayFilas = agrupacion === "lineas" ? filasLineas.length > 0 : filasTabla.length > 0;
+  // Datos y paginación de la tabla del nivel actual, sea cual sea.
+  const enLineas = nivel === "lineas";
+  const datosVisibles: RespTabla | RespLineas | null = enLineas ? lineasData : tablaData;
+  const hayFilas = enLineas ? filasLineas.length > 0 : filasTabla.length > 0;
   const totalPages = datosVisibles?.totalPages ?? 1;
   const pageClamped = datosVisibles?.page ?? page;
 
@@ -452,12 +489,12 @@ export default function ComprasConsumoPage() {
     }
   }, [cod, desde, hasta]);
 
-  // Carga automática del detalle al abrir la vista "individual" (clic en una
-  // fila de la tabla, ver abrirDetalle) — la vista ya no tiene su propio
-  // formulario/botón de búsqueda.
+  // Carga automática del detalle al bajar al nivel "detalle" (clic en una
+  // fila de la tabla de artículos, ver abrirDetalle) — el nivel no tiene su
+  // propio formulario/botón de búsqueda.
   useEffect(() => {
-    if (vista === "individual" && cod.trim()) load();
-  }, [vista, cod, load]);
+    if (nivel === "detalle" && cod.trim()) load();
+  }, [nivel, cod, load]);
 
   const toggleDep = (d: number) =>
     setDeps((prev) => {
@@ -510,16 +547,18 @@ export default function ComprasConsumoPage() {
         <div>
           <h1 className="text-yellow-400 font-bold text-xl uppercase tracking-wide flex items-center gap-2">
             <LineChart size={20} />{" "}
-            {vista === "tabla" && agrupacion === "lineas"
+            {nivel === "lineas"
               ? "Consumo por línea"
-              : "Consumo por artículo"}
+              : nivel === "articulos"
+                ? "Consumo por artículo"
+                : "Detalle del artículo"}
           </h1>
           <p className="text-zinc-500 text-sm mt-1">
-            {vista === "individual"
-              ? "Cantidad vendida por mes (pedidos Cerrados/Facturados) de un artículo en el rango de meses elegido, con total, promedio mensual, máximo, mínimo > 0 y stock actual por depósito."
-              : agrupacion === "lineas"
-                ? "Buscá por código y/o línea, y hacé clic en una fila para ver los artículos de esa línea. Total vendido, promedio mensual, máximo, mínimo > 0 y stock actual por línea — máximo y mínimo son del mes de la línea entera."
-                : "Buscá por código y/o línea, y hacé clic en una fila para ver el detalle mensual de ese artículo. Total vendido, promedio mensual, máximo, mínimo > 0 y stock actual por artículo."}
+            {nivel === "lineas"
+              ? "Todas las líneas con artículos nacionales. Clic en una fila para ver sus artículos. Total vendido, promedio mensual, máximo, mínimo > 0 y stock actual por línea — máximo y mínimo son del mes de la línea entera."
+              : nivel === "articulos"
+                ? "Artículos de la línea, con total vendido, promedio mensual, máximo, mínimo > 0 y stock actual. Clic en una fila para ver el detalle mensual de ese artículo."
+                : "Cantidad vendida por mes (pedidos Cerrados/Facturados) de un artículo en el rango de meses elegido, con total, promedio mensual, máximo, mínimo > 0 y stock actual por depósito."}
           </p>
           {/* El recorte a nacionales no es un filtro que el usuario pueda
               apagar — se avisa acá para que nadie compare estos números
@@ -531,16 +570,53 @@ export default function ComprasConsumoPage() {
           </p>
         </div>
 
-        {vista === "individual" && (
+        {/* Migas del drill-down + botón Volver (2026-09-07).
+            Cada escalón muestra dónde se está parado; el botón sube uno. */}
+        {nivel !== "lineas" && (
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={volver}
+              className="btn-anim inline-flex items-center gap-1.5 text-sm rounded-md border border-zinc-700 text-zinc-300 px-3 py-1.5 hover:border-yellow-400 hover:text-yellow-400 transition-colors"
+            >
+              <ChevronLeft size={16} />
+              {nivel === "detalle" ? "Volver a los artículos" : "Volver a las líneas"}
+            </button>
+            <div className="flex items-center gap-1.5 text-xs text-zinc-500 min-w-0">
+              <button
+                type="button"
+                onClick={irALineas}
+                className="hover:text-yellow-400 transition-colors uppercase tracking-wide shrink-0"
+              >
+                Líneas
+              </button>
+              <ChevronRight size={12} className="text-zinc-700 shrink-0" />
+              {/* Estando en el detalle, la miga de la línea vuelve a sus
+                  artículos; estando ya en los artículos, es solo la etiqueta
+                  de dónde se está parado. */}
+              {nivel === "detalle" ? (
+                <button
+                  type="button"
+                  onClick={irAArticulos}
+                  className="truncate hover:text-yellow-400 transition-colors"
+                >
+                  {lineaSel || "—"}
+                </button>
+              ) : (
+                <span className="truncate text-zinc-300">{lineaSel || "—"}</span>
+              )}
+              {nivel === "detalle" && (
+                <>
+                  <ChevronRight size={12} className="text-zinc-700 shrink-0" />
+                  <span className="text-zinc-300 truncate">{cod || "—"}</span>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {nivel === "detalle" && (
         <>
-        {/* Detalle de un artículo — se abre desde la tabla, no tiene formulario propio */}
-        <button
-          type="button"
-          onClick={() => setVista("tabla")}
-          className="btn-anim inline-flex items-center gap-1.5 text-sm text-zinc-400 hover:text-yellow-400 transition-colors"
-        >
-          <ChevronLeft size={16} /> Volver a la tabla
-        </button>
         {/* Encabezado del detalle — el código llega del clic en la tabla, sin formulario propio */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-4 flex flex-wrap items-center gap-3">
           <span className="text-xs text-zinc-400 uppercase tracking-wide">Artículo</span>
@@ -557,7 +633,7 @@ export default function ComprasConsumoPage() {
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-16 flex flex-col items-center gap-3 text-center">
             <Search size={40} className="text-zinc-700" />
             <p className="text-zinc-500 text-sm">
-              Volvé a la tabla y hacé clic en un artículo para ver su detalle.
+              Volvé a los artículos y hacé clic en uno para ver su detalle.
             </p>
           </div>
         )}
@@ -723,9 +799,10 @@ export default function ComprasConsumoPage() {
         </>
         )}
 
-        {vista === "tabla" && (
+        {nivel !== "detalle" && (
           <>
-            {/* Filtros: rango de meses (compartido) + búsqueda rápida por código.
+            {/* Filtros: rango de meses (compartido) + la búsqueda del nivel
+                actual (línea arriba, código adentro de una línea).
                 sticky top-16: queda fijo debajo del header al scrollear la tabla. */}
             <div className="sticky top-16 z-40 rounded-xl border border-zinc-800 bg-[#141414]/95 backdrop-blur px-5 py-4 flex flex-wrap items-end gap-4">
               <div className="flex flex-col gap-1.5">
@@ -763,92 +840,72 @@ export default function ComprasConsumoPage() {
                   className="bg-[#1f1f1f] border border-zinc-700 rounded-md px-2 py-2 text-sm text-zinc-200 outline-none [color-scheme:dark] focus:border-yellow-400 cursor-pointer"
                 />
               </div>
-              <div className="flex flex-col gap-1.5">
-                <label htmlFor="filtro-cod" className="text-xs text-zinc-400 uppercase tracking-wide">
-                  Buscar código
-                </label>
-                <div className="relative">
-                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
-                  <input
-                    id="filtro-cod"
-                    type="text"
-                    value={filtroCod}
-                    onChange={(e) => setFiltroCod(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleRefrescar()}
-                    placeholder="Ej: E730020"
-                    autoFocus
-                    className="bg-[#1f1f1f] border border-zinc-700 rounded-md pl-7 pr-3 py-2 text-sm text-zinc-100 outline-none w-44 focus:border-yellow-400 placeholder:text-zinc-600"
-                  />
+              {/* Un solo buscador por nivel: arriba se busca la línea, adentro
+                  de una línea se busca el código. El otro no se muestra para
+                  que no queden filtros invisibles aplicándose por detrás. */}
+              {enLineas ? (
+                <div className="flex flex-col gap-1.5">
+                  <label htmlFor="filtro-linea" className="text-xs text-zinc-400 uppercase tracking-wide">
+                    Buscar línea {lineas.length > 0 && (
+                      <span className="normal-case text-zinc-600">({lineas.length} en el catálogo)</span>
+                    )}
+                  </label>
+                  <div className="relative">
+                    <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+                    <input
+                      id="filtro-linea"
+                      type="text"
+                      list="lineas-datalist"
+                      value={filtroLinea}
+                      onChange={(e) => setFiltroLinea(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleRefrescar()}
+                      placeholder="Ej: Mangueras"
+                      className="bg-[#1f1f1f] border border-zinc-700 rounded-md pl-7 pr-3 py-2 text-sm text-zinc-100 outline-none w-48 focus:border-yellow-400 placeholder:text-zinc-600"
+                    />
+                    <datalist id="lineas-datalist">
+                      {lineas.map((l) => (
+                        <option key={l.linea} value={l.linea}>
+                          {fmtNum(l.cantidadArticulos)} artículo(s)
+                        </option>
+                      ))}
+                    </datalist>
+                  </div>
                 </div>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <label htmlFor="filtro-linea" className="text-xs text-zinc-400 uppercase tracking-wide">
-                  Buscar línea {lineas.length > 0 && (
-                    <span className="normal-case text-zinc-600">({lineas.length} en el catálogo)</span>
-                  )}
-                </label>
-                <div className="relative">
-                  <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
-                  <input
-                    id="filtro-linea"
-                    type="text"
-                    list="lineas-datalist"
-                    value={filtroLinea}
-                    onChange={(e) => setFiltroLinea(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleRefrescar()}
-                    placeholder="Ej: Premium"
-                    className="bg-[#1f1f1f] border border-zinc-700 rounded-md pl-7 pr-3 py-2 text-sm text-zinc-100 outline-none w-48 focus:border-yellow-400 placeholder:text-zinc-600"
-                  />
-                  <datalist id="lineas-datalist">
-                    {lineas.map((l) => (
-                      <option key={l.linea} value={l.linea}>
-                        {fmtNum(l.cantidadArticulos)} artículo(s)
-                      </option>
-                    ))}
-                  </datalist>
+              ) : (
+                <div className="flex flex-col gap-1.5">
+                  <label htmlFor="filtro-cod" className="text-xs text-zinc-400 uppercase tracking-wide">
+                    Buscar código <span className="normal-case text-zinc-600">(en {lineaSel})</span>
+                  </label>
+                  <div className="relative">
+                    <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" />
+                    <input
+                      id="filtro-cod"
+                      type="text"
+                      value={filtroCod}
+                      onChange={(e) => setFiltroCod(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleRefrescar()}
+                      placeholder="Ej: E730020"
+                      autoFocus
+                      className="bg-[#1f1f1f] border border-zinc-700 rounded-md pl-7 pr-3 py-2 text-sm text-zinc-100 outline-none w-44 focus:border-yellow-400 placeholder:text-zinc-600"
+                    />
+                  </div>
                 </div>
-              </div>
+              )}
               <button
                 type="button"
                 onClick={handleRefrescar}
-                disabled={tablaLoading || !tieneEntrada}
-                title="Escribir código/línea no busca solo — hay que presionar acá (o Enter)"
+                disabled={tablaLoading || (!tieneEntrada && !appliedCod && !appliedLinea)}
+                title="Escribir no busca solo — hay que presionar acá (o Enter). Vacío y Refrescar limpia la búsqueda."
                 className="btn-anim flex items-center gap-2 bg-yellow-400 text-black font-semibold text-sm rounded-md px-4 py-2 disabled:opacity-40"
               >
                 {tablaLoading ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />}
                 Refrescar
               </button>
-              {/* Unidad de la tabla: artículo ↔ línea (2026-09-07).
-                  Mantiene filtros, rango y orden; solo cambia qué representa
-                  cada fila. Amarillo cuando está agrupado por línea, para que
-                  se vea de un vistazo que los números no son por artículo. */}
-              <button
-                type="button"
-                onClick={toggleAgrupacion}
-                disabled={tablaLoading}
-                title={
-                  agrupacion === "articulos"
-                    ? "Ver los mismos números agrupados por línea"
-                    : "Volver a la tabla por artículo"
-                }
-                className={`btn-anim flex items-center gap-2 text-sm rounded-md px-4 py-2 border transition-colors disabled:opacity-40 ${
-                  agrupacion === "lineas"
-                    ? "border-yellow-400 bg-yellow-400/10 text-yellow-400 font-semibold"
-                    : "border-zinc-700 text-zinc-200 hover:border-yellow-400"
-                }`}
-              >
-                {agrupacion === "lineas" ? <Layers size={15} /> : <Package size={15} />}
-                {agrupacion === "lineas" ? "Líneas" : "Artículos"}
-              </button>
               <button
                 type="button"
                 onClick={handleExport}
-                disabled={exporting || !appliedLinea}
-                title={
-                  appliedLinea
-                    ? `Exportar a Excel ${agrupacion === "lineas" ? "las líneas" : "los artículos"} del filtro actual`
-                    : "Elegí una línea y presioná Refrescar para poder exportar"
-                }
+                disabled={exporting}
+                title={`Exportar a Excel ${enLineas ? "las líneas" : "los artículos"} de la tabla, sin paginar`}
                 className="btn-anim flex items-center gap-2 border border-zinc-700 text-zinc-200 text-sm rounded-md px-4 py-2 hover:border-yellow-400 disabled:opacity-40 transition-colors"
               >
                 {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
@@ -856,37 +913,28 @@ export default function ComprasConsumoPage() {
               </button>
               {datosVisibles && (
                 <span className="text-sm text-zinc-500 pb-2">
-                  {datosVisibles.total} {agrupacion === "lineas" ? "línea(s)" : "artículo(s)"}
+                  {datosVisibles.total} {enLineas ? "línea(s)" : "artículo(s)"}
                   {tablaLoading ? " — actualizando…" : ""}
                 </span>
               )}
             </div>
 
-            {!tieneFiltro && (
-              <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-16 flex flex-col items-center gap-3 text-center">
-                <Search size={40} className="text-zinc-700" />
-                <p className="text-zinc-500 text-sm">
-                  Ingresá un código y/o una línea, y presioná Refrescar (o Enter).
-                </p>
-              </div>
-            )}
-
-            {tieneFiltro && tablaError && (
+            {tablaError && (
               <div className="flex items-center gap-1.5 text-xs text-red-300">
                 <AlertTriangle size={13} /> {tablaError}
               </div>
             )}
 
-            {tieneFiltro && !datosVisibles && !tablaLoading && !tablaError && (
+            {!datosVisibles && !tablaLoading && !tablaError && (
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-16 flex flex-col items-center gap-3 text-center">
                 <Table2 size={40} className="text-zinc-700" />
                 <p className="text-zinc-500 text-sm">
-                  Cargando la tabla de {agrupacion === "lineas" ? "líneas" : "artículos"}…
+                  Cargando la tabla de {enLineas ? "líneas" : "artículos"}…
                 </p>
               </div>
             )}
 
-            {tieneFiltro && !datosVisibles && tablaLoading && (
+            {!datosVisibles && tablaLoading && (
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-16 flex flex-col items-center gap-3 text-center">
                 <Loader2 size={40} className="text-yellow-400 animate-spin" />
                 <p className="text-zinc-500 text-sm">Consultando la base…</p>
@@ -897,15 +945,14 @@ export default function ComprasConsumoPage() {
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-16 flex flex-col items-center gap-3 text-center">
                 <Search size={40} className="text-zinc-700" />
                 <p className="text-zinc-500 text-sm">
-                  Sin {agrupacion === "lineas" ? "líneas" : "artículos"} nacionales que coincidan con
-                  la búsqueda.
+                  Sin {enLineas ? "líneas" : "artículos"} nacionales que coincidan con la búsqueda.
                 </p>
               </div>
             )}
 
             {/* Tabla por LÍNEA — mismas columnas y semáforo que la de
                 artículos (2026-09-07). */}
-            {agrupacion === "lineas" && lineasData && filasLineas.length > 0 && (
+            {enLineas && lineasData && filasLineas.length > 0 && (
               <div
                 className={`rounded-xl border border-zinc-800 overflow-hidden transition-opacity ${
                   tablaLoading ? "opacity-50 pointer-events-none" : ""
@@ -951,17 +998,16 @@ export default function ComprasConsumoPage() {
                           r.stock > 0 && r.minimo != null && r.minimo > 0 ? r.stock / r.minimo : null;
                         const tone =
                           r.promedio * 2 > r.stock ? "red" : r.promedio * 2 < r.stock ? "green" : null;
-                        const abrible = r.linea !== LINEA_SIN_LINEA;
                         return (
                           <tr
                             key={r.linea}
                             onClick={() => abrirLinea(r.linea)}
                             title={
-                              abrible
-                                ? "Ver los artículos de esta línea"
-                                : "Artículos sin línea cargada en el catálogo — no hay línea que filtrar"
+                              r.linea === LINEA_SIN_LINEA
+                                ? "Ver los artículos sin línea cargada en el catálogo"
+                                : "Ver los artículos de esta línea"
                             }
-                            className={`border-t border-zinc-800/60 transition-colors ${abrible ? "cursor-pointer" : "cursor-default"} ${
+                            className={`border-t border-zinc-800/60 transition-colors cursor-pointer ${
                               tone === "red"
                                 ? "bg-red-500/10 hover:bg-red-500/20"
                                 : tone === "green"
@@ -1025,7 +1071,7 @@ export default function ComprasConsumoPage() {
               </div>
             )}
 
-            {agrupacion === "articulos" && tablaData && filasTabla.length > 0 && (
+            {!enLineas && tablaData && filasTabla.length > 0 && (
               <div
                 className={`rounded-xl border border-zinc-800 overflow-hidden transition-opacity ${
                   tablaLoading ? "opacity-50 pointer-events-none" : ""

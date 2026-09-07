@@ -36,6 +36,7 @@ export async function GET(req: NextRequest) {
   const sortDir = sp.get("sortDir") ?? "desc";
   const qs = new URLSearchParams({ desde, hasta, sort, sortDir, linea });
   if (q) qs.set("q", q);
+  if (sp.get("lineaExacta") === "1") qs.set("lineaExacta", "1");
 
   try {
     const res = await fetch(

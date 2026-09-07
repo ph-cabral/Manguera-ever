@@ -14,9 +14,10 @@ export const maxDuration = 90;
 // Suma SOLO artículos nacionales (recorte en SQL, ver _COND_NACIONAL en
 // indicadores-api/compras.py).
 //
-// Mismo requisito de filtro que la vista de artículos: q y/o linea, al menos
-// uno. Se corta acá antes de pegarle al backend, además del chequeo que ya
-// hace fetch_consumo_lineas.
+// SIN filtro obligatorio, a diferencia de consumo-articulos: es la pantalla de
+// entrada de la vista y tiene que listar todas las líneas de una. Es barato
+// (la agregación por línea/mes no crece con el catálogo, ver el docstring de
+// fetch_consumo_lineas).
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const desde = sp.get("desde");
@@ -26,12 +27,6 @@ export async function GET(req: NextRequest) {
   }
   const q = sp.get("q")?.trim() || null;
   const linea = sp.get("linea")?.trim() || null;
-  if (!q && !linea) {
-    return NextResponse.json(
-      { error: "Ingresá código o línea para buscar" },
-      { status: 400 },
-    );
-  }
   const sort = sp.get("sort") ?? "totalVendido";
   const sortDir = sp.get("sortDir") ?? "desc";
   const page = sp.get("page") ?? "1";
@@ -39,6 +34,7 @@ export async function GET(req: NextRequest) {
   const qs = new URLSearchParams({ desde, hasta, sort, sortDir, page, pageSize });
   if (q) qs.set("q", q);
   if (linea) qs.set("linea", linea);
+  if (sp.get("lineaExacta") === "1") qs.set("lineaExacta", "1");
   try {
     const res = await fetch(`${API_URL}/compras/consumo-lineas?${qs.toString()}`, {
       cache: "no-store",

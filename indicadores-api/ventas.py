@@ -19,6 +19,7 @@ Tablas (EVERWEAR, confirmadas por deposito.py/main.py):
 from datetime import datetime, date
 from decimal import Decimal
 import calendar
+import os
 import re
 import time
 from db import get_connection
@@ -135,7 +136,8 @@ def fetch_pedidos_mes(desde: str, hasta: str) -> dict:
 # _VEN_01_REAL_Ventas_Hechos): Ven_CompCabecera + Ven_CompRenglon
 # (comprobantes REALES, no pedidos), cantidad/monto NETOS de nota de crédito
 # según Ven_CodCom.DebitoCredito (1=Débito suma, 2=Crédito resta), filtro
-# cc.EvitaInformesYListados <> 1, mes = FecMovim del COMPROBANTE vía
+# cc.EvitaInformesYListados <> 1 + la lista blanca COMPROBANTES_VENTA (ver
+# el bloque de abajo, 2026-09-07), mes = FecMovim del COMPROBANTE vía
 # dbo.fecha_cla2sql() (no FechaPedido del pedido — ver nota en el HANDOFF de
 # por qué esto importa: un pedido de un mes facturado al siguiente cae en el
 # mes de la factura).
@@ -151,6 +153,66 @@ def fetch_pedidos_mes(desde: str, hasta: str) -> dict:
 # el historial de ESE cliente y se agrupa por año/mes en Python.
 MESES_ES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
 SIN_LINEA = "(Sin línea)"
+
+# ──────────────────────────────────────────────────────────────────────────
+# QUÉ COMPROBANTES SON VENTA (criterio de contaduría, 2026-09-07)
+# ──────────────────────────────────────────────────────────────────────────
+# Hasta ahora el universo de la venta era "todo comprobante con renglón de
+# artículo y EvitaInformesYListados <> 1". Eso dejaba entrar cosas que no son
+# venta de mercadería (bienes de uso, líquido producto, la factura contado
+# fiscal en desuso) y dejaba AFUERA las notas de crédito de bonificación, que
+# no tienen renglón de artículo.
+#
+# El criterio ahora es una LISTA BLANCA de `Ven_CodCom.CompCodigo`. El signo
+# lo sigue poniendo `Ven_CodCom.DebitoCredito` (1 débito suma, 2 crédito
+# resta), así que la lista sola alcanza: no hace falta ninguna otra marca.
+#
+#   ENTRAN, con renglón de artículo (Ven_CompRenglon)
+#     11 FACTURA CTA.CTE. MAYORISTA      28 FACTURA CONTADO (MOSTRADOR)
+#     42 FACTURA CTA. CTE. MOSTRADOR     47 FACTURA DIRECTA (sin mov.)
+#      2 FCT. CTE.CTE. (FISCAL) (sin mov.)
+#     22 CREDITO DEVOL. MERCAD. MAYORIS  43 NOTA CRED DEVOL CTA CTE MOSTR
+#     29 NOTA CRED. DEVOL. CDO. MOSTRAD
+#   ENTRAN, con renglón de CONCEPTO (Ven_RenDebCre) → ver COMPROBANTES_AJUSTE
+#     24 CREDITO BONIFICACION            60 CREDITO BONIF. FUERA DE RECIBO
+#     25 CREDITO  INTERNO                23 CRED. BONIFIC. FISCAL (sin mov.)
+#     62 AJUSTE SALDOS DEBITOS
+#   QUEDAN AFUERA
+#      1 FCT. CONTADO (FISCAL)          12 DEBITO POR CHEQUE RECHAZADO
+#     13 DEBITO INTERESES               15 DEBITO GASTOS - CHEQUES
+#     63 CREDITO CH RECHAZADO           27 VENTA BIENES DE USO
+#     61 AJUSTE SALDOS CREDITOS         81 LIQUIDO PRODUCTO
+#    102 FC CTA CTE USD (FISCAL)
+#
+# Los débitos financieros (12/13/15/63) ya quedaban afuera solos por no tener
+# renglón de artículo; lo que la lista agrega de nuevo es sacar 1/27/81/102 y
+# habilitar el bloque de concepto. Se mantiene `EvitaInformesYListados <> 1`.
+#
+# Overrideable por env para poder reclasificar sin tocar código.
+COMPROBANTES_VENTA = tuple(
+    int(x)
+    for x in os.getenv(
+        "VENTAS_COMPROBANTES", "2,11,22,23,24,25,28,29,42,43,47,60,62"
+    ).split(",")
+    if x.strip()
+)
+# Subconjunto que NO tiene renglón de artículo: el importe vive en
+# `Ven_RenDebCre` (notas de crédito/débito por concepto). Lo consume
+# bonificaciones.py — acá está para que la lista y su partición se lean en un
+# solo lugar.
+COMPROBANTES_AJUSTE = tuple(c for c in COMPROBANTES_VENTA if c in (23, 24, 25, 60, 62))
+
+_WHERE_LEGACY = "WHERE cc.EvitaInformesYListados <> 1"
+_WHERE_VENTA = _WHERE_LEGACY + "\n  AND cc.CompCodigo IN (%s)" % ",".join(
+    str(c) for c in COMPROBANTES_VENTA
+)
+
+
+def _solo_venta(sql: str) -> str:
+    """Agrega el IN de comprobantes de venta al WHERE de una consulta de
+    renglones de artículo. Se aplica al definir la constante (antes de
+    cualquier .format()), así el filtro vive en un solo lugar."""
+    return sql.replace(_WHERE_LEGACY, _WHERE_VENTA)
 
 # ──────────────────────────────────────────────────────────────────────────
 # Catálogo de líneas: dbo.Stk_Nivel1 (2026-08-20). StkFer_ArtParamet.Nivel1
@@ -175,7 +237,7 @@ def _nombre_linea(raw: str) -> str:
 
 
 SQL_VENTAS_CLIENTE = """
-SELECT
+SELECT  -- ver COMPROBANTES_VENTA: el IN del WHERE define qué es venta
     LTRIM(RTRIM(n1.Detalle)) AS Linea,
     dbo.fecha_cla2sql(c.FecMovim) AS Fecha,
     cc.EvitaInformesYListados AS Evita,
@@ -188,7 +250,8 @@ LEFT JOIN StkFer_Articulos  s  ON s.CodArticulo     = r.CodArticu
 LEFT JOIN StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
 LEFT JOIN Stk_Nivel1        n1 ON n1.Nivel1         = ap.Nivel1
 WHERE c.CodCliente = ?
-"""
+  AND cc.CompCodigo IN (%s)
+""" % ",".join(str(c) for c in COMPROBANTES_VENTA)
 
 # Catálogo de vendedores — maestro `Vendedores` (ver cartera.py para por qué
 # este y no `Ped_Usu_Arma`). Alimenta el selector de /admin/usuarios y el
@@ -479,7 +542,7 @@ def _ventana(expr: str) -> str:
     return f"SUM(CASE WHEN vc.FecMovim BETWEEN ? AND ? THEN ({expr}) ELSE 0 END)"
 
 
-SQL_TOP_CLIENTES_VENDEDOR = f"""
+SQL_TOP_CLIENTES_VENDEDOR = _solo_venta(f"""
 SELECT
     c.CodCliente AS CodCliente,
     LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
@@ -495,9 +558,9 @@ WHERE cc.EvitaInformesYListados <> 1
 GROUP BY c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre))
 HAVING SUM({_MONTO_NETO}) > 0
 ORDER BY MontoNeto DESC, MontoMes DESC
-"""
+""")
 
-SQL_TOP_CLIENTES_TODOS = f"""
+SQL_TOP_CLIENTES_TODOS = _solo_venta(f"""
 SELECT
     c.CodCliente AS CodCliente,
     LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
@@ -512,7 +575,39 @@ WHERE cc.EvitaInformesYListados <> 1
 GROUP BY c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre))
 HAVING SUM({_MONTO_NETO}) > 0
 ORDER BY MontoNeto DESC, MontoMes DESC
-"""
+""")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Ajuste de la venta (notas de crédito por concepto) en los rankings
+# ──────────────────────────────────────────────────────────────────────────
+# Las bonificaciones y los ajustes de saldo se emiten como ND/NC por CONCEPTO
+# (comprobantes 24/60/25/23/62): no tienen renglón de artículo, así que no
+# aparecen en ninguna de las consultas de arriba y el bruto de los rankings
+# queda por encima de la venta real. Se traen aparte, con el mismo rango y el
+# mismo recorte por cartera, y viajan en el payload como `ajuste`/`ajusteMes`
+# para que el pie de la tabla pueda mostrar bruto → ajuste → neto.
+#
+# NO se prorratean adentro de las filas: la NC es de la empresa, no de un
+# cliente ni de una línea en particular, así que repartirla por fila sería un
+# supuesto. Cada fila del ranking sigue siendo venta BRUTA; el neto es del
+# total.
+#
+# El import va adentro de la función a propósito: bonificaciones.py importa de
+# este módulo (la lista blanca de comprobantes), así que a nivel de módulo
+# sería un import circular.
+def _ajuste_rankings(dias_acum, dias_mes, dias_total, vendedor, forzar):
+    """{'ajuste': x, 'ajusteMes': y} para el payload de un ranking. Nunca
+    rompe la vista: si la consulta del ajuste falla, devuelve ceros y el
+    ranking se sigue mostrando en bruto."""
+    try:
+        from bonificaciones import ajuste_ventanas
+
+        aj = ajuste_ventanas(dias_acum, dias_mes, dias_total,
+                             vendedor=vendedor, forzar=forzar)
+        return {"ajuste": aj["acum"], "ajusteMes": aj["mes"]}
+    except Exception:
+        return {"ajuste": 0.0, "ajusteMes": 0.0}
 
 
 def fetch_top_clientes(
@@ -599,6 +694,7 @@ def fetch_top_clientes(
             "mesActual": f"{mes_ym[0]:04d}-{mes_ym[1]:02d}",
             "totalClientes": len(clientes),
             "porMonto": clientes[:limit_i],
+            **_ajuste_rankings(dias_acum, dias_mes, dias_total, vendedor, forzar),
         }
         _TOP_CLIENTES_CACHE[cache_key] = (ahora, resultado)
         return resultado
@@ -619,7 +715,7 @@ def fetch_top_clientes(
 # Stk_Nivel1, ej. Nivel1 = 0) no se pierde, cae en SIN_LINEA. Por eso el
 # "> 0" va en Python y no en un HAVING — hay que consolidar el grupo NULL
 # con el grupo '' antes de decidir si la línea entra.
-SQL_TOP_LINEAS_VENDEDOR = f"""
+SQL_TOP_LINEAS_VENDEDOR = _solo_venta(f"""
 SELECT
     LTRIM(RTRIM(n1.Detalle)) AS Linea,
     {_ventana(_UNIDADES_NETAS)} AS UnidadesNetas,
@@ -637,9 +733,9 @@ LEFT JOIN Stk_Nivel1        n1 ON n1.Nivel1         = ap.Nivel1
 WHERE cc.EvitaInformesYListados <> 1
   AND vc.FecMovim BETWEEN ? AND ?
 GROUP BY LTRIM(RTRIM(n1.Detalle))
-"""
+""")
 
-SQL_TOP_LINEAS_TODOS = f"""
+SQL_TOP_LINEAS_TODOS = _solo_venta(f"""
 SELECT
     LTRIM(RTRIM(n1.Detalle)) AS Linea,
     {_ventana(_UNIDADES_NETAS)} AS UnidadesNetas,
@@ -655,7 +751,7 @@ LEFT JOIN Stk_Nivel1        n1 ON n1.Nivel1         = ap.Nivel1
 WHERE cc.EvitaInformesYListados <> 1
   AND vc.FecMovim BETWEEN ? AND ?
 GROUP BY LTRIM(RTRIM(n1.Detalle))
-"""
+""")
 
 
 def fetch_top_lineas(
@@ -755,6 +851,10 @@ def fetch_top_lineas(
             "totalLineasMonto": len(por_monto),
             "porUnidades": por_unidades[:limit_i],
             "porMonto": por_monto[:limit_i],
+            # El ajuste sólo mueve $: el concepto no tiene cantidad (el SP del
+            # BI emite 0 AS Cantidad), así que el ranking por unidades no se
+            # toca. Ver bonificaciones.py.
+            **_ajuste_rankings(dias_acum, dias_mes, dias_total, vendedor, forzar),
         }
         _TOP_LINEAS_CACHE[cache_key] = (ahora, resultado)
         return resultado
@@ -812,7 +912,7 @@ _TOP_CLIENTES_LINEA_TTL_SEG = 15 * 60  # 15 minutos
 # WHERE que las filtraría. Comparar enteros no puede fallar así.
 #
 # El CASE va en una subconsulta y el GROUP BY afuera, para no repetirlo.
-_SUB_CLIENTES_LINEA_VENDEDOR_TPL = """
+_SUB_CLIENTES_LINEA_VENDEDOR_TPL = _solo_venta("""
 SELECT
     c.CodCliente AS CodCliente,
     LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
@@ -829,9 +929,9 @@ LEFT JOIN StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
 WHERE cc.EvitaInformesYListados <> 1
   AND vc.FecMovim BETWEEN ? AND ?
   AND {linea_cond}
-"""
+""")
 
-_SUB_CLIENTES_LINEA_TODOS_TPL = """
+_SUB_CLIENTES_LINEA_TODOS_TPL = _solo_venta("""
 SELECT
     c.CodCliente AS CodCliente,
     LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
@@ -847,7 +947,7 @@ LEFT JOIN StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
 WHERE cc.EvitaInformesYListados <> 1
   AND vc.FecMovim BETWEEN ? AND ?
   AND {linea_cond}
-"""
+""")
 
 # ── Variante rápida: arrancar por los ARTÍCULOS de la línea ────────────────
 # (2026-08-26, medido) La forma de arriba arranca por Clientes/comprobantes y
@@ -880,7 +980,7 @@ _SUB_ART_DE_LINEA = """
     WHERE {linea_cond}
 """
 
-_SUB_CLIENTES_LINEA_TODOS_ART_TPL = """
+_SUB_CLIENTES_LINEA_TODOS_ART_TPL = _solo_venta("""
 SELECT
     c.CodCliente AS CodCliente,
     LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
@@ -895,13 +995,13 @@ JOIN MAGNUS_SITD.dbo.Clientes c ON c.CodCliente   = vc.CodCliente
 WHERE cc.EvitaInformesYListados <> 1
   AND r.FecMovim  BETWEEN ? AND ?
   AND vc.FecMovim BETWEEN ? AND ?
-"""
+""")
 
 # OJO con el orden de los parámetros: acá `Clientes` NO es la tabla que
 # arranca la query, así que los dos parámetros de SQL_JOIN_CARTERA NO son los
 # primeros (como sí lo son en el resto de las queries de este módulo). Van
 # después del nombre de la línea. Ver params en fetch_clientes_por_linea.
-_SUB_CLIENTES_LINEA_VENDEDOR_ART_TPL = """
+_SUB_CLIENTES_LINEA_VENDEDOR_ART_TPL = _solo_venta("""
 SELECT
     c.CodCliente AS CodCliente,
     LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
@@ -917,7 +1017,7 @@ JOIN MAGNUS_SITD.dbo.Clientes c ON c.CodCliente   = vc.CodCliente
 WHERE cc.EvitaInformesYListados <> 1
   AND r.FecMovim  BETWEEN ? AND ?
   AND vc.FecMovim BETWEEN ? AND ?
-"""
+""")
 
 
 SQL_CLIENTES_LINEA_WRAP = """

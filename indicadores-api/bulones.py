@@ -21,7 +21,8 @@ agregados". Las diferencias con ventas.py son TRES y sólo tres:
 
 Fuente y criterio de "venta neta": IDÉNTICOS a ventas.py (Ven_CompCabecera +
 Ven_CompRenglon, neto de nota de crédito según Ven_CodCom.DebitoCredito,
-filtro cc.EvitaInformesYListados <> 1, mes = FecMovim del comprobante). Ver
+filtro cc.EvitaInformesYListados <> 1 + la lista blanca
+COMPROBANTES_VENTA, mes = FecMovim del comprobante). Ver
 el docstring de ventas.py y HANDOFF_extracciones_sql.md.
 
 Gotchas heredados de ventas.py (NO tocar sin leer eso primero):
@@ -44,11 +45,23 @@ from db import get_connection
 from cartera import SQL_JOIN_CARTERA, params_cartera
 from ventas import (
     BASE_DATE,
+    COMPROBANTES_VENTA,
     _anio_vacio,
     _case_anio_mes,
     _resolver_rango,
     _round_anio,
     _safe,
+)
+
+# Qué comprobantes son VENTA. La lista blanca se define una sola vez en
+# ventas.py (COMPROBANTES_VENTA, criterio de contaduría 2026-09-07); acá se
+# arma el pedazo de WHERE que comparten todas las consultas de este módulo,
+# para que /ventas/bulones y /ventas/vendedor no puedan divergir.
+# Los comprobantes de ajuste (24/25/60/23/62) están en la lista pero no
+# tienen renglón de artículo, así que no aportan nada a estas consultas: su
+# importe vive en Ven_RenDebCre y lo trae bonificaciones.py.
+_COMP = "cc.EvitaInformesYListados <> 1 AND cc.CompCodigo IN (%s)" % ",".join(
+    str(c) for c in COMPROBANTES_VENTA
 )
 
 # La línea a la que está acotada TODA esta vista. Se compara con LIKE contra
@@ -180,10 +193,10 @@ def fetch_top_clientes(vendedor: int | None = None, limit: int = 1_000_000,
         return hit
 
     joins = _JOIN_VENDEDOR if vendedor is not None else _JOIN_CLIENTE
-    where = "WHERE cc.EvitaInformesYListados <> 1 AND vc.FecMovim BETWEEN ? AND ?"
+    where = f"WHERE {_COMP} AND vc.FecMovim BETWEEN ? AND ?"
     params: tuple = (d1, d2)
     if vendedor is not None:
-        where = "WHERE cc.EvitaInformesYListados <> 1 AND vc.FecMovim BETWEEN ? AND ?"
+        where = f"WHERE {_COMP} AND vc.FecMovim BETWEEN ? AND ?"
         params = params_cartera(vendedor) + (d1, d2)
     sql = f"""
 SELECT c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre, SUM({_MONTO}) AS MontoNeto
@@ -232,7 +245,7 @@ def fetch_top_patrones(vendedor: int | None = None, limit: int = 1_000_000,
 
     if vendedor is not None:
         joins, where, params = _JOIN_VENDEDOR, (
-            "WHERE cc.EvitaInformesYListados <> 1 "
+            f"WHERE {_COMP} "
             "AND vc.FecMovim BETWEEN ? AND ?"
         ), params_cartera(vendedor) + (d1, d2)
     else:
@@ -240,7 +253,7 @@ def fetch_top_patrones(vendedor: int | None = None, limit: int = 1_000_000,
 FROM Ven_CompCabecera vc
 JOIN Ven_CompRenglon r   ON r.NroMovVenta = vc.NroMovVenta
 JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
-""", "WHERE cc.EvitaInformesYListados <> 1 AND vc.FecMovim BETWEEN ? AND ?", (d1, d2)
+""", f"WHERE {_COMP} AND vc.FecMovim BETWEEN ? AND ?", (d1, d2)
 
     sql = f"""
 SELECT LTRIM(RTRIM(s.ArticuloPatron)) AS Patron,
@@ -308,12 +321,12 @@ def fetch_top_vendedores(vendedor: int | None = None, limit: int = 1_000_000,
     if hit is not None:
         return hit
 
-    where = ("WHERE cc.EvitaInformesYListados <> 1 "
+    where = (f"WHERE {_COMP} "
              "AND vc.FecMovim BETWEEN ? AND ?")
     params: tuple = (d1, d2)
     if vendedor is not None:
         where = ("WHERE vc.vendedor = ? "
-                 "AND cc.EvitaInformesYListados <> 1 "
+                 f"AND {_COMP} "
                  "AND vc.FecMovim BETWEEN ? AND ?")
         params = (int(vendedor), d1, d2)
     # Se agrupa por vc.vendedor (la columna del comprobante, entera y ya
@@ -467,12 +480,12 @@ def fetch_clientes_por_patron(patron: str, vendedor: int | None = None,
     # cola, así que 'ABC   ' = 'ABC'.
     if vendedor is not None:
         joins = _JOIN_VENDEDOR
-        where = ("WHERE cc.EvitaInformesYListados <> 1 "
+        where = (f"WHERE {_COMP} "
                  "AND vc.FecMovim BETWEEN ? AND ? AND s.ArticuloPatron = ?")
         params = params_cartera(vendedor) + (d1, d2, patron_norm)
     else:
         joins = _JOIN_CLIENTE
-        where = ("WHERE cc.EvitaInformesYListados <> 1 "
+        where = (f"WHERE {_COMP} "
                  "AND vc.FecMovim BETWEEN ? AND ? AND s.ArticuloPatron = ?")
         params = (d1, d2, patron_norm)
     sub = f"""
@@ -526,7 +539,7 @@ SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
        {_case_anio_mes((a_ant, a_act))} AS AnioMes,
        {_CANT} AS Cant, {_MONTO} AS Monto
 {_JOIN_CLIENTE}{_JOIN_ART}WHERE vc.vendedor = ?
-  AND cc.EvitaInformesYListados <> 1
+  AND {_COMP}
   AND vc.FecMovim BETWEEN ? AND ?
   AND {COND_BULON}
 """
@@ -581,7 +594,7 @@ SELECT LTRIM(RTRIM(s.ArticuloPatron)) AS Clave,
        {_case_anio_mes((a_ant, a_act))} AS AnioMes,
        {_CANT} AS Cant, {_MONTO} AS Monto
 {_JOIN_CLIENTE}{_JOIN_ART}WHERE c.CodCliente = ?
-  AND cc.EvitaInformesYListados <> 1
+  AND {_COMP}
   AND vc.FecMovim BETWEEN ? AND ?
   AND {COND_BULON}
 """

@@ -6,19 +6,32 @@ Las vistas de ventas (`ventas.py`, `bulones.py`) leen `Ven_CompRenglon`: un
 renglón por artículo. Los descuentos comerciales de Ever Wear NO se
 instrumentan ahí — se emiten como notas de crédito por CONCEPTO, que viven en
 `Ven_RenDebCre` y no tienen artículo. Por eso nunca restaron en las vistas y
-los totales quedaban por encima del BI. Ene-ago 2026 son -894M, un 7% de la
-venta con artículo.
+los totales quedaban por encima del BI. Ene-ago 2026 son -840,7M, un 8,2% de
+la venta con artículo.
 
 Es la misma fuente que el BI: `_VEN_05_REAL_Debitos_y_Creditos` arma con esto
 las filas `Concept(N)` de la tabla de hechos `MAGNUS_SITD.dbo.Ventas_Hechos`
 (las que en el pivot caen bajo "Artículos Sin Patrón"). El recorte de acá es
 el del SP, salvo el filtro de conceptos.
 
-Criterio
+Criterio (cambiado 2026-09-07: por COMPROBANTE, no por concepto)
 --------
-· Sólo los conceptos COMERCIALES (CONCEPTOS_COMERCIALES). Los financieros
-  —cheque rechazado, intereses, gastos bancarios, percepciones— quedan afuera:
-  son débitos que SUMAN (+151M en ene-ago 2026) y no son venta.
+· Entran los comprobantes de ajuste de la lista blanca de contaduría —
+  `ventas.COMPROBANTES_AJUSTE`: 24 CREDITO BONIFICACION, 60 CREDITO BONIF.
+  FUERA DE RECIBO, 25 CREDITO INTERNO, 23 CRED. BONIFIC. FISCAL (sin
+  movimiento) y 62 AJUSTE SALDOS DEBITOS. Quedan afuera los financieros
+  —12 débito por cheque rechazado, 13 intereses, 15 gastos de cheques,
+  63 crédito cheque rechazado—, que SUMAN (+184M en ene-ago 2026) y no son
+  venta.
+· DENTRO de esos comprobantes NO se filtra por concepto: entra el renglón
+  completo, salvo IIBB (`Ven_ConcDebCre.TotalizaImpEn = 6`, igual que el SP
+  del BI). Esto reemplaza al filtro anterior `CodConcepto IN (3,4,12,24,28,
+  29)`, que daba -813,2M contra -840,7M del criterio nuevo en ene-ago 2026.
+  La diferencia son las dos puntas que el filtro por concepto trataba mal:
+  conceptos financieros que viajan adentro de una NC comercial (el 25 lleva
+  -1,9M de cheque rechazado) y conceptos comerciales que viajan adentro de un
+  comprobante de débito descartado (el 15 lleva +8,6M de BONIFICACION y
+  +10,7M de AJUSTES VENTAS).
 · Sólo la sub-empresa REAL, igual que el resto de las vistas comerciales. El
   par PRUEBA (`PRU_Ven_RenDebCre`, vía `_VEN_06`) NO se suma, y no es sólo por
   consistencia: verificado 2026-09-04, PRUEBA es un registro paralelo que
@@ -45,42 +58,35 @@ Gotchas heredados (ver el docstring de ventas.py antes de tocar nada)
 import os
 import time
 
+from cartera import SQL_JOIN_CARTERA, params_cartera
 from db import get_connection
-from ventas import BASE_DATE, _case_anio_mes, _resolver_rango, _safe
+from ventas import BASE_DATE, COMPROBANTES_AJUSTE, _case_anio_mes, _resolver_rango, _safe
 
-# Conceptos que ajustan la VENTA. Salen del maestro `Ven_ConcDebCre`:
-#   3  FLETE                    4  BONIFICACION
-#   12 BONIFICACION EXTRA      24  AJUSTES VENTAS
-#   28 MERCADERIA VENTAS       29  MERCADERIA VENTAS 10.50%
-# Quedan afuera a propósito los financieros (1 cheque rechazado, 2/11
-# intereses, 5/16 comisiones bancarias, 14 gastos de cobranza, 18 deudores,
-# 32 gastos por cheque rechazado, 33/35/36 percepciones IIBB…).
-#
-# El maestro tiene además variantes emparentadas que HOY no tienen movimiento
-# en ningún período mirado (6 DEVOLUCION MERCADERIA, 7 PROMOCION Y PUBLICIDAD
-# VENTAS, 9 FLETE, 21 BONIFICACION - EXENTO, 31 AJUSTE VENTAS EXENTO): si
-# alguna vez se empiezan a usar, van agregadas acá — no hay ninguna marca en
-# la base que separe comercial de financiero, la lista es el criterio.
-CONCEPTOS_COMERCIALES = tuple(
-    int(x) for x in os.getenv("BONIF_CONCEPTOS", "3,4,12,24,28,29").split(",") if x.strip()
-)
-_IN_CONCEPTOS = ",".join(str(c) for c in CONCEPTOS_COMERCIALES)
+# Comprobantes que ajustan la VENTA y no tienen renglón de artículo. La lista
+# blanca completa vive en ventas.py (COMPROBANTES_VENTA); acá se usa su
+# partición `COMPROBANTES_AJUSTE` para no repetir el criterio.
+_IN_COMPROBANTES = ",".join(str(c) for c in COMPROBANTES_AJUSTE)
 
-# Recorte del SP del BI. `SubSistemaVentas = 2` es la clase "Débitos y
-# Créditos" y es lo que hace selectiva la consulta junto con el IN de
-# conceptos; el join a Ven_Clientes está porque lo tiene el SP (es un lookup
+# Recorte del SP del BI, con el filtro de conceptos reemplazado por el de
+# comprobantes. `cc.CompCodigo IN (...)` es lo que hace selectiva la consulta
+# junto con el rango de fechas (CompCodigo es columna del comprobante, no
+# calculada); el join a Ven_Clientes está porque lo tiene el SP (es un lookup
 # por PK y no descarta ninguna fila del período, verificado 2026-09-04).
+#
+# `TotalizaImpEn = 6` marca los conceptos de IIBB (33, 35, 36) y el SP los
+# excluye — se mantiene. Va con ISNULL porque el join al maestro es LEFT: un
+# concepto sin fila en `Ven_ConcDebCre` no puede desaparecer.
 _FROM = """
 FROM Ven_RenDebCre    rd
 JOIN Ven_CompCabecera c   ON c.NroMovVenta = rd.NroMovVenta
 JOIN Ven_CodCom       cc  ON cc.CompCodigo = c.CompCodigo
 JOIN Ven_Clientes     cli ON cli.CodCliente = c.CodCliente
 LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
-WHERE cc.SubSistemaVentas = 2
+WHERE cc.CompCodigo IN (%s)
   AND cc.EvitaInformesYListados <> 1
-  AND rd.CodConcepto IN (%s)
+  AND ISNULL(cn.TotalizaImpEn, 0) <> 6
   AND c.FecMovim BETWEEN ? AND ?
-""" % _IN_CONCEPTOS
+""" % _IN_COMPROBANTES
 
 _IMPORTE = "SUM(CASE cc.DebitoCredito WHEN 1 THEN rd.Importe ELSE rd.Importe * -1 END)"
 
@@ -153,6 +159,16 @@ def fetch_bonificaciones(desde: str | None = None, hasta: str | None = None,
         renglones = int(fila[1] or 0)
 
         cur.execute(
+            f"SELECT cc.CompCodigo, MAX(LTRIM(RTRIM(cc.Detalle))) AS Detalle, "
+            f"{_IMPORTE} AS Importe {where} GROUP BY cc.CompCodigo ORDER BY 3",
+            params)
+        por_comprobante = [
+            {"comprobante": int(c), "detalle": (d or "").strip() or str(c),
+             "monto": round(float(_safe(m) or 0), 2)}
+            for c, d, m in cur.fetchall()
+        ]
+
+        cur.execute(
             f"SELECT rd.CodConcepto, MAX(LTRIM(RTRIM(cn.Detalle))) AS Detalle, "
             f"{_IMPORTE} AS Importe {where} GROUP BY rd.CodConcepto ORDER BY 3",
             params)
@@ -183,9 +199,10 @@ def fetch_bonificaciones(desde: str | None = None, hasta: str | None = None,
     return _guardar(key, {
         "desde": _ym(desde_ym),
         "hasta": _ym(hasta_ym),
-        "conceptos": list(CONCEPTOS_COMERCIALES),
+        "comprobantes": list(COMPROBANTES_AJUSTE),
         "total": total,
         "renglones": renglones,
+        "porComprobante": por_comprobante,
         "porConcepto": por_concepto,
         "porMes": por_mes,
         "porVendedor": por_vendedor,
@@ -302,3 +319,94 @@ def bonificacion_por_vendedor(desde: str | None = None, hasta: str | None = None
     la apertura completa. Sale del mismo cache que fetch_bonificaciones."""
     data = fetch_bonificaciones(desde=desde, hasta=hasta, forzar=forzar)
     return {v["codigo"]: v["monto"] for v in data["porVendedor"]}
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Ajuste de las DOS ventanas de /ventas/vendedor (acumulado + mes en curso)
+# ──────────────────────────────────────────────────────────────────────────
+# Los rankings de esa vista traen cada fila con su monto del acumulado y su
+# monto del mes en curso (ver ventas._rango_ytd_y_mes). El ajuste tiene que
+# venir con la misma forma para poder mostrarse en el pie de la tabla:
+# bruto → ajuste → neto, en las dos columnas.
+#
+# Sale de UNA sola consulta con dos SUM(CASE ...), igual que ventas._ventana,
+# y con un BETWEEN externo que cubre la unión de las dos ventanas para que el
+# filtro siga siendo sargable sobre `cab.FecMovim`.
+#
+# Criterio de vendedor: acá NO se usa `Ven_CompCabecera.Vendedor` de la nota
+# de crédito sino la CARTERA del cliente (mismo JOIN que el ranking al que se
+# le resta). Mezclar los dos criterios en una misma tabla haría que el neto
+# no cierre: el bruto sale de la cartera, así que el ajuste también.
+# `bonificacion_por_vendedor` (más abajo) sigue usando el vendedor del
+# comprobante — es para el ranking de vendedores, que se arma con ese eje.
+_AJUSTE_ROW = "CASE cc.DebitoCredito WHEN 1 THEN rd.Importe ELSE rd.Importe * -1 END"
+
+_WHERE_AJUSTE = """
+WHERE cc.CompCodigo IN (%s)
+  AND cc.EvitaInformesYListados <> 1
+  AND ISNULL(cn.TotalizaImpEn, 0) <> 6
+  AND cab.FecMovim BETWEEN ? AND ?
+""" % _IN_COMPROBANTES
+
+_SELECT_AJUSTE = f"""
+SELECT
+    SUM(CASE WHEN cab.FecMovim BETWEEN ? AND ? THEN {_AJUSTE_ROW} ELSE 0 END) AS Acum,
+    SUM(CASE WHEN cab.FecMovim BETWEEN ? AND ? THEN {_AJUSTE_ROW} ELSE 0 END) AS Mes
+"""
+
+_SQL_AJUSTE_TODOS = _SELECT_AJUSTE + """
+FROM Ven_RenDebCre    rd
+JOIN Ven_CompCabecera cab ON cab.NroMovVenta = rd.NroMovVenta
+JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
+LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
+""" + _WHERE_AJUSTE
+
+_SQL_AJUSTE_VENDEDOR = _SELECT_AJUSTE + """
+FROM MAGNUS_SITD.dbo.Clientes c
+""" + SQL_JOIN_CARTERA + """
+JOIN Ven_CompCabecera cab ON cab.CodCliente  = c.CodCliente
+JOIN Ven_RenDebCre    rd  ON rd.NroMovVenta  = cab.NroMovVenta
+JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
+LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
+""" + _WHERE_AJUSTE
+
+
+def ajuste_ventanas(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
+                    dias_total: tuple[int, int],
+                    vendedor: int | None = None,
+                    forzar: bool = False) -> dict:
+    """Ajuste neto (notas de crédito de bonificación y ajustes de saldo) de
+    las dos ventanas de /ventas/vendedor.
+
+    Devuelve `{"acum": float, "mes": float}`, ya con signo: negativo cuando
+    hay bonificación (que es lo normal). Sumarlo al bruto da el neto.
+
+    Los tres rangos son enteros Magnus, tal como los devuelve
+    ventas._rango_ytd_y_mes — `dias_total` es la unión de los otros dos y es
+    el que va al WHERE.
+    """
+    key = ("aj-vent", dias_acum, dias_mes, vendedor)
+    hit = _cacheado(key, forzar)
+    if hit is not None:
+        return hit
+
+    # Orden de los "?": los dos CASE del SELECT, después el JOIN de cartera
+    # (si hay) y al final el WHERE. Mismo criterio que ventas.py.
+    if vendedor is not None:
+        sql = _SQL_AJUSTE_VENDEDOR
+        params = dias_acum + dias_mes + params_cartera(vendedor) + dias_total
+    else:
+        sql = _SQL_AJUSTE_TODOS
+        params = dias_acum + dias_mes + dias_total
+
+    conn, cur = _conn()
+    try:
+        cur.execute(sql, params)
+        fila = cur.fetchone()
+        acum = round(float(_safe(fila[0]) or 0), 2)
+        mes = round(float(_safe(fila[1]) or 0), 2)
+    finally:
+        cur.close()
+        conn.close()
+
+    return _guardar(key, {"acum": acum, "mes": mes})

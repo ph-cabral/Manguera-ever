@@ -837,7 +837,13 @@ def ventas_vendedor_top_clientes(
     filtración (con el límite alto, coincide con len(porMonto) salvo casos
     extremos). Ver docstring de fetch_top_clientes (ventas.py) para el
     criterio de acceso por vendedor (mismo que /clientes y
-    /ventas/vendedor) y para el formato de `desde`/`hasta`."""
+    /ventas/vendedor) y para el formato de `desde`/`hasta`.
+
+    Desde 2026-09-07 trae además `ajuste` / `ajusteMes`: las bonificaciones y
+    ajustes de saldo del mismo rango y la misma cartera (notas de crédito por
+    concepto, sin artículo — ver bonificaciones.py). Vienen con signo y NO
+    están prorrateadas adentro de las filas: cada cliente sigue siendo venta
+    bruta, y el pie de la tabla arma bruto → ajuste → neto."""
     try:
         return fetch_top_clientes(vendedor=vendedor, limit=limit, desde=desde, hasta=hasta)
     except ValueError as e:
@@ -867,7 +873,11 @@ def ventas_vendedor_top_lineas(
     (ordenado por $), cada item con `unidades` y `monto` — más
     `totalLineas` / `totalLineasMonto` (2026-08-26: el
     ranking de líneas ahora tiene botón $ | Unidades como el modal). Ver
-    fetch_top_lineas (ventas.py)."""
+    fetch_top_lineas (ventas.py).
+
+    Desde 2026-09-07 trae además `ajuste` / `ajusteMes`, igual que
+    top-clientes. Sólo mueven $: el concepto de una nota de crédito no tiene
+    cantidad, así que el ranking por unidades no se toca."""
     try:
         return fetch_top_lineas(vendedor=vendedor, limit=limit, desde=desde, hasta=hasta)
     except ValueError as e:
@@ -987,11 +997,16 @@ def bulones_bonificacion(
 ):
     """Bonificación de la empresa y la parte que le toca a BULONERÍA.
 
-    Las bonificaciones son notas de crédito por concepto: no tienen artículo,
-    así que no tienen línea y no se pueden restar de un ranking acotado a una.
-    Acá van prorrateadas por la participación de bulonería en la venta con
-    artículo del mismo rango (~0,32%), y se muestran APARTE — los rankings de
-    clientes, patrones y vendedores no las descuentan.
+    Las bonificaciones y los ajustes de saldo son notas de crédito/débito por
+    concepto: no tienen artículo, así que no tienen línea y no se pueden
+    restar de un ranking acotado a una. Acá van prorrateadas por la
+    participación de bulonería en la venta con artículo del mismo rango
+    (~0,32%), y se muestran APARTE — los rankings de clientes, patrones y
+    vendedores no las descuentan.
+
+    Desde 2026-09-07 el universo se define por COMPROBANTE
+    (ventas.COMPROBANTES_AJUSTE) y no por concepto; la respuesta trae
+    `porComprobante` además de `porConcepto`.
 
     NO toma `vendedor`: es un número de empresa, acotarlo a una cartera no
     significaría nada. Ver bonificaciones.py."""

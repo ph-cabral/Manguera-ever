@@ -131,6 +131,11 @@ interface RespTopClientes {
   mesActual: string; // "YYYY-MM"
   totalClientes: number;
   porMonto: TopCliente[];
+  // Bonificaciones y ajustes del mismo rango y la misma cartera. Negativo
+  // (es una nota de crédito). NO está prorrateado adentro de las filas: cada
+  // fila es venta bruta y el neto se arma en el pie. Ver bonificaciones.py.
+  ajuste?: number;
+  ajusteMes?: number;
 }
 
 // Desde 2026-08-26 cada línea trae las DOS métricas y el back manda las dos
@@ -153,6 +158,10 @@ interface RespTopLineas {
   totalLineasMonto: number;
   porUnidades: TopLinea[];
   porMonto: TopLinea[];
+  // Sólo mueve $ — el concepto de una nota de crédito no tiene cantidad, así
+  // que en la vista por unidades no hay nada que ajustar.
+  ajuste?: number;
+  ajusteMes?: number;
 }
 
 // Clientes que compraron una línea puntual, de mayor a menor gasto — para
@@ -652,6 +661,8 @@ export default function VentasVendedorPage() {
     desde: string | null;
     hasta: string | null;
     mesActual: string;
+    ajuste?: number;
+    ajusteMes?: number;
   } | null = topVista === "clientes" ? topClientes : topLineas;
   const topTotal: number | null =
     topVista === "clientes"
@@ -907,6 +918,21 @@ export default function VentasVendedorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [topItems, modo],
   );
+
+  // Ajuste de la venta: bonificaciones y ajustes de saldo del mismo rango y
+  // la misma cartera (comprobantes 24/60/25/23/62 — ver bonificaciones.py).
+  // Se emiten como notas de crédito por concepto, sin artículo, así que no
+  // están en ninguna fila del ranking: entran sólo acá, en el pie.
+  //
+  // Sólo en $. En la vista por unidades no hay nada que ajustar: el concepto
+  // de una nota de crédito no tiene cantidad.
+  const topAjuste = useMemo(() => {
+    if (modo === "unidades") return null;
+    const acum = topResp?.ajuste ?? 0;
+    const mes = topResp?.ajusteMes ?? 0;
+    if (!acum && !mes) return null;
+    return { acum, mes };
+  }, [topResp, modo]);
 
   // Etiquetas de encabezado. Salen del BACK (`desde`/`hasta`/`mesActual`)
   // para que el título no pueda contradecir a los datos. En enero
@@ -1912,9 +1938,13 @@ export default function VentasVendedorPage() {
                               se compare contra un mes a medio facturar. */}
                           <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800 text-yellow-400/80">
                             {/* El título es el TOTAL de la columna — el mismo
-                                topSumas.mes que el pie, así que no pueden
-                                discrepar — y el mes queda de subtítulo. */}
-                            <span className="tabular-nums">{fmtTop(topSumas.mes)}</span>
+                                número que la ÚLTIMA fila del pie, así que no
+                                pueden discrepar: neto cuando hay
+                                bonificaciones que restar, bruto cuando no —
+                                y el mes queda de subtítulo. */}
+                            <span className="tabular-nums">
+                              {fmtTop(topSumas.mes + (topAjuste?.mes ?? 0))}
+                            </span>
                             <span className="block text-[11px] font-normal text-zinc-500">
                               {mesActualLabel}
                             </span>
@@ -2024,22 +2054,75 @@ export default function VentasVendedorPage() {
                           del acordeón — es el total del período, no el de
                           lo que hay a la vista. */}
                       <tfoot className="bg-[#1A1A1A] border-t-2 border-zinc-700">
+                        {/* Sin ajuste (vista por unidades, o rango sin notas
+                            de crédito) el pie es una sola fila y dice
+                            "Total", como siempre. Con ajuste se abre en
+                            bruto → ajuste → neto. */}
                         <tr>
                           <td className="px-3 py-2" />
-                          <td className="px-3 py-2 font-semibold text-zinc-300 whitespace-nowrap">
-                            Total{" "}
+                          <td
+                            className={`px-3 py-2 whitespace-nowrap ${
+                              topAjuste
+                                ? "font-medium text-zinc-400"
+                                : "font-semibold text-zinc-300"
+                            }`}
+                          >
+                            {topAjuste ? "Venta bruta" : "Total"}{" "}
                             <span className="text-zinc-500 font-normal">
                               ({topItems.length}{" "}
                               {topVista === "clientes" ? "clientes" : "líneas"})
                             </span>
                           </td>
-                          <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                          <td
+                            className={`px-3 py-2 text-right tabular-nums border-l border-zinc-800 whitespace-nowrap ${
+                              topAjuste
+                                ? "text-zinc-300"
+                                : "text-yellow-400 font-bold"
+                            }`}
+                          >
                             {fmtTop(topSumas.acum)}
                           </td>
-                          <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                          <td
+                            className={`px-3 py-2 text-right tabular-nums border-l border-zinc-800 whitespace-nowrap ${
+                              topAjuste
+                                ? "text-zinc-300"
+                                : "text-yellow-400 font-bold"
+                            }`}
+                          >
                             {fmtTop(topSumas.mes)}
                           </td>
                         </tr>
+                        {topAjuste && (
+                          <>
+                            <tr>
+                              <td className="px-3 py-2" />
+                              <td
+                                className="px-3 py-2 font-medium text-zinc-400 whitespace-nowrap"
+                                title="Notas de crédito por concepto (bonificación, bonificación fuera de recibo, crédito interno) y ajustes de saldo. No tienen artículo, así que no figuran en ninguna fila del ranking."
+                              >
+                                Bonificaciones y ajustes
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-red-400 border-l border-zinc-800 whitespace-nowrap">
+                                {fmtTop(topAjuste.acum)}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-red-400 border-l border-zinc-800 whitespace-nowrap">
+                                {fmtTop(topAjuste.mes)}
+                              </td>
+                            </tr>
+                            <tr className="border-t border-zinc-700">
+                              <td className="px-3 py-2" />
+                              <td className="px-3 py-2 font-semibold text-zinc-300 whitespace-nowrap">
+                                Venta neta
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                                {fmtTop(topSumas.acum + topAjuste.acum)}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-bold border-l border-zinc-800 whitespace-nowrap">
+                                {fmtTop(topSumas.mes + topAjuste.mes)}
+                              </td>
+                            </tr>
+                          </>
+                        )}
                       </tfoot>
                     </table>
                   </div>

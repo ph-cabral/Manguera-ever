@@ -185,10 +185,12 @@ interface RespTopVendedores {
   porMonto: TopVendedor[];
 }
 
-// Bonificaciones: notas de crédito por CONCEPTO. No tienen artículo, así que
-// no tienen línea — el importe es de TODA la empresa. `montoBulones` es la
-// parte que le toca a la línea prorrateada por `participacion` (su peso en la
-// venta con artículo del mismo rango, ~0,32%). Ver bonificaciones.py.
+// Bonificaciones y ajustes: notas de crédito/débito por CONCEPTO
+// (comprobantes 24 bonificación, 60 bonificación fuera de recibo, 25 crédito
+// interno, 23 fiscal y 62 ajuste de saldos). No tienen artículo, así que no
+// tienen línea — el importe es de TODA la empresa. `montoBulones` es la parte
+// que le toca a la línea prorrateada por `participacion` (su peso en la venta
+// con artículo del mismo rango, ~0,32%). Ver bonificaciones.py.
 interface RespBonificacion {
   desde: string;
   hasta: string;
@@ -197,6 +199,7 @@ interface RespBonificacion {
   ventaBulones: number;
   participacion: number;
   montoBulones: number;
+  porComprobante: { comprobante: number; detalle: string; monto: number }[];
   porConcepto: { concepto: number; detalle: string; monto: number }[];
   porMes: { mes: string; monto: number }[];
 }
@@ -1400,10 +1403,11 @@ export default function VentasBulonesPage() {
               </div>
             </div>
             <p className="mt-3 text-xs leading-relaxed text-zinc-500">
-              Las bonificaciones se emiten como notas de crédito por concepto,
-              sin artículo: son de toda la empresa y no se pueden imputar a una
-              línea. Acá se prorratean por la participación de bulonería en la
-              venta ({(bonif.participacion * 100).toFixed(2)}%
+              Las bonificaciones y los ajustes de saldo se emiten como notas de
+              crédito por concepto, sin artículo: son de toda la empresa y no
+              se pueden imputar a una línea. Acá se prorratean por la
+              participación de bulonería en la venta
+              ({(bonif.participacion * 100).toFixed(2)}%
               {" · "}
               {fmtMoney(bonif.ventaBulones)} sobre {fmtMoney(bonif.ventaTotal)}).
               <strong className="text-zinc-400">

@@ -26,6 +26,7 @@ export async function PATCH(
     vendedorCodigo?: number | null;
     bulonesAccesoTotal?: boolean;
     vickiVentasAcceso?: boolean;
+    vickiRrhhAcceso?: boolean;
   } = {};
   if (typeof body?.activo === "boolean") data.activo = body.activo;
   if (body?.rol === "ADMIN" || body?.rol === "USUARIO") data.rol = body.rol;
@@ -56,6 +57,13 @@ export async function PATCH(
   // vendedorCodigo — ver lib/ventas/vickiVentasAcceso.ts.
   if (typeof body?.vickiVentasAcceso === "boolean") {
     data.vickiVentasAcceso = body.vickiVentasAcceso;
+  }
+
+  // Acceso a datos de asistencia desde el chat de Vicki (intent "rrhh"):
+  // faltas, feriados y horas extra. NO se filtra por persona — el que lo tiene
+  // ve a toda la empresa. Ver lib/rrhh/vickiRrhhAcceso.ts.
+  if (typeof body?.vickiRrhhAcceso === "boolean") {
+    data.vickiRrhhAcceso = body.vickiRrhhAcceso;
   }
 
   // Reseteo de contraseña: el admin asigna una nueva (mín. 6 caracteres).
@@ -103,6 +111,7 @@ export async function PATCH(
       vendedorCodigo: true,
       bulonesAccesoTotal: true,
       vickiVentasAcceso: true,
+      vickiRrhhAcceso: true,
     },
     });
     return NextResponse.json({ ok: true, usuario });

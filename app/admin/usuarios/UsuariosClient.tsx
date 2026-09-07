@@ -22,6 +22,10 @@ type U = {
   // (columna "Vicki datos"). SIEMPRE filtrado por su vendedorCodigo — ver
   // lib/ventas/vickiVentasAcceso.ts.
   vickiVentasAcceso: boolean;
+  // Puede pedirle a Vicki datos de ASISTENCIA — faltas, feriados, horas extra
+  // (columna "Vicki RRHH"). OJO: no se filtra por persona, ve a toda la
+  // empresa. Ver lib/rrhh/vickiRrhhAcceso.ts.
+  vickiRrhhAcceso: boolean;
   activo: boolean;
   ultimoAcceso: string | null;
   createdAt: string;
@@ -162,6 +166,7 @@ export function UsuariosClient() {
               <th className="px-3 py-2 font-medium">Vendedor</th>
               <th className="px-3 py-2 font-medium">Bulonería</th>
               <th className="px-3 py-2 font-medium">Vicki datos</th>
+              <th className="px-3 py-2 font-medium">Vicki RRHH</th>
               <th className="px-3 py-2 font-medium">Rol</th>
               <th className="px-3 py-2 font-medium">Estado</th>
               <th className="px-3 py-2 font-medium">Último acceso</th>
@@ -171,13 +176,13 @@ export function UsuariosClient() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={10} className="px-3 py-8 text-center text-muted-foreground">
+                <td colSpan={11} className="px-3 py-8 text-center text-muted-foreground">
                   <Loader2 className="inline size-5 animate-spin" />
                 </td>
               </tr>
             ) : items.length === 0 ? (
               <tr>
-                <td colSpan={10} className="px-3 py-8 text-center text-muted-foreground">
+                <td colSpan={11} className="px-3 py-8 text-center text-muted-foreground">
                   Todavía no hay usuarios.
                 </td>
               </tr>
@@ -208,6 +213,13 @@ export function UsuariosClient() {
                       usuario={u}
                       disabled={busy === u.id}
                       onCambiar={(v) => patch(u.id, { vickiVentasAcceso: v })}
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <CeldaVickiRrhh
+                      usuario={u}
+                      disabled={busy === u.id}
+                      onCambiar={(v) => patch(u.id, { vickiRrhhAcceso: v })}
                     />
                   </td>
                   <td className="px-3 py-2">
@@ -437,6 +449,60 @@ function CeldaVickiVentas({
         "rounded-full px-2 py-0.5 text-xs transition disabled:opacity-50 " +
         (habilitado
           ? "bg-emerald-100 text-emerald-900 hover:bg-emerald-200"
+          : "bg-secondary text-muted-foreground hover:bg-accent")
+      }
+    >
+      {habilitado ? "habilitado" : "sin acceso"}
+    </button>
+  );
+}
+
+/**
+ * Celda "Vicki RRHH": quién puede pedirle a Vicki datos de asistencia — días
+ * de falta de una persona, feriados registrados, horas extra (2026-09-07).
+ *
+ * A diferencia de "Vicki datos" (ventas), acá NO hay recorte por persona: el
+ * que está habilitado ve la asistencia de TODA la empresa, porque un dato de
+ * RRHH a medias no sirve ("quién hizo horas extras" necesita la lista
+ * completa). Habilitar a alguien es darle la asistencia de sus compañeros —
+ * darlo sólo a RRHH. Los ADMIN ya lo tienen sin bandera; ver
+ * lib/rrhh/vickiRrhhAcceso.ts.
+ */
+function CeldaVickiRrhh({
+  usuario,
+  disabled,
+  onCambiar,
+}: {
+  usuario: U;
+  disabled: boolean;
+  onCambiar: (valor: boolean) => void;
+}) {
+  if (usuario.rol === "ADMIN") {
+    return (
+      <span
+        className="text-xs text-muted-foreground"
+        title="Los admin ya pueden pedirle a Vicki los datos de asistencia"
+      >
+        sin restricción (admin)
+      </span>
+    );
+  }
+
+  const habilitado = usuario.vickiRrhhAcceso;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onCambiar(!habilitado)}
+      title={
+        habilitado
+          ? "Puede preguntarle a Vicki por faltas, feriados y horas extra de TODA la empresa. Click para quitarle el acceso."
+          : "No puede pedirle datos de asistencia a Vicki. Click para habilitarlo — atención: verá la asistencia de todos, no sólo la suya."
+      }
+      className={
+        "rounded-full px-2 py-0.5 text-xs transition disabled:opacity-50 " +
+        (habilitado
+          ? "bg-amber-100 text-amber-900 hover:bg-amber-200"
           : "bg-secondary text-muted-foreground hover:bg-accent")
       }
     >

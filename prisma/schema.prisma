@@ -511,6 +511,12 @@ model usuario {
   // Sin vendedorCodigo asignado, aunque esté en true, no puede consultar nada
   // (mismo criterio que /ventas/vendedor: sin vendedor = cero datos).
   vickiVentasAcceso Boolean @default(false)
+  // Acceso a datos de ASISTENCIA desde el chat de Vicki (intent "rrhh", ver
+  // vicki_chat/app/asistencia_tools.py): faltas, feriados y horas extra.
+  // OJO — a diferencia de vickiVentasAcceso, esto NO se filtra por persona:
+  // quien lo tiene ve la asistencia de TODA la empresa (un dato de RRHH a
+  // medias no sirve). Darlo sólo a RRHH. Ver lib/rrhh/vickiRrhhAcceso.ts.
+  vickiRrhhAcceso Boolean @default(false)
   activo         Boolean   @default(true)
   ultimoAcceso   DateTime?
   createdAt      DateTime  @default(now())

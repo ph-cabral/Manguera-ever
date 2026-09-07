@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { resolverAccesoVickiRrhh } from "@/lib/rrhh/vickiRrhhAcceso";
 import { resolverAccesoVickiVentas } from "@/lib/ventas/vickiVentasAcceso";
 
 export const dynamic = "force-dynamic";
@@ -15,13 +16,21 @@ export async function POST(req: NextRequest) {
     // porque vienen de este backend, nunca del cliente — si se leyeran del
     // body tal cual, cualquiera podría mandar `vendedorCodigo` de otra
     // persona. Ver lib/ventas/vickiVentasAcceso.ts.
-    const acceso = await resolverAccesoVickiVentas();
+    // Los dos permisos se resuelven en paralelo: son dos lookups distintos
+    // sobre la misma sesión y esto corre en CADA mensaje del chat.
+    const [acceso, accesoRrhh] = await Promise.all([
+      resolverAccesoVickiVentas(),
+      resolverAccesoVickiRrhh(),
+    ]);
     if (!acceso.ok) {
       return NextResponse.json({ error: acceso.error }, { status: acceso.status });
     }
     body.vicki_ventas_habilitado = acceso.habilitado;
     body.vicki_ventas_admin = acceso.isAdmin;
     body.vicki_ventas_vendedor_codigo = acceso.habilitado ? acceso.vendedorCodigo : null;
+    // Asistencia (intent "rrhh"): todo o nada, sin filtro por persona — ver
+    // lib/rrhh/vickiRrhhAcceso.ts.
+    body.vicki_rrhh_habilitado = accesoRrhh.ok && accesoRrhh.habilitado;
 
     const r = await fetch(`${VICKI_URL}/chat`, {
       method: "POST",

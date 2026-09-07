@@ -19,8 +19,8 @@ from deposito import (
 from compras import (
     fetch_ordenes_pendientes, fetch_ordenes_articulos_rango, fetch_ordenes_detalle_rango,
     fetch_compras_valorizado,
-    fetch_consumo_articulo, fetch_consumo_articulos, fetch_lineas,
-    fetch_lineas_por_articulos,
+    fetch_consumo_articulo, fetch_consumo_articulos, fetch_consumo_lineas,
+    fetch_lineas, fetch_lineas_por_articulos,
 )
 from oc_areas import fetch_oc_por_area, fetch_oc_detalle_area
 from ingresos import fetch_remitos_ingreso
@@ -583,6 +583,55 @@ def compras_consumo_articulos_export(
     Excel."""
     try:
         return fetch_consumo_articulos(
+            desde, hasta, sort=sort, sort_dir=sortDir,
+            q=q, linea=linea, export=True,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+# ── Compras: consumo mensual por LÍNEA (botón "Líneas" de /compras/consumo) ──
+# 2026-09-07: mismas métricas que /compras/consumo-articulos
+# pero agregadas por línea (Stk_Nivel1) en vez de por artículo. Como el resto
+# de la vista, suma SOLO artículos nacionales.
+@app.get("/compras/consumo-lineas")
+def compras_consumo_lineas(
+    desde: str = Query(...),
+    hasta: str = Query(...),
+    sort: str = Query("totalVendido"),
+    sortDir: str = Query("desc"),
+    page: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=200),
+    q: str | None = Query(None),
+    linea: str | None = Query(None),
+):
+    """Vendido/promedio/máximo/mínimo>0 y stock por LÍNEA, sobre artículos
+    nacionales. Mismo requisito que la vista de artículos: al menos uno de
+    `q` (código) o `linea`."""
+    try:
+        return fetch_consumo_lineas(
+            desde, hasta, sort=sort, sort_dir=sortDir, page=page, page_size=pageSize,
+            q=q, linea=linea,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+# ── Compras: export a Excel de la tabla por línea (sin paginar) ──────────────
+@app.get("/compras/consumo-lineas/export")
+def compras_consumo_lineas_export(
+    desde: str = Query(...),
+    hasta: str = Query(...),
+    sort: str = Query("totalVendido"),
+    sortDir: str = Query("desc"),
+    q: str | None = Query(None),
+    linea: str = Query(...),
+):
+    """Igual que /compras/consumo-lineas pero sin paginar, para volcar a Excel."""
+    try:
+        return fetch_consumo_lineas(
             desde, hasta, sort=sort, sort_dir=sortDir,
             q=q, linea=linea, export=True,
         )

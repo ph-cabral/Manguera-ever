@@ -724,6 +724,31 @@ def fetch_consumo_articulo(codigo: str, desde: str, hasta: str):
 # el rango O con stock actual > 0 en algún depósito (evita listar SKUs de
 # baja sin stock ni movimiento).
 #
+# SOLO NACIONALES (2026-09-07): todo lo que suma esta vista —
+# artículos, líneas, stock y el datalist de líneas — se recorta a artículos de
+# tipo Nacional (StkFer_Articulos.NacionalImportado → Stk_TiposArticulos.
+# Descripcion = 'Nacional'). Criterio de origenArticulo.ts, NO el de
+# _cond_tipo de este archivo: Original, Importado y Fabril quedan afuera.
+# Verificado en la base: los 41.219 artículos del catálogo tienen SIEMPRE un
+# tipo cargado (21.012 Nacional, 7.035 Fabril, 6.604 Original, 6.555
+# Importado, 13 Generico), así que el INNER JOIN no pierde filas por tipo
+# nulo y no hace falta el ISNULL(..., 'Nacional') que usa el resto del
+# archivo. El join va char = char sin LTRIM/RTRIM para que use índice (SQL
+# Server ignora los espacios finales al comparar).
+_JOIN_NACIONAL_RENG = """
+INNER JOIN EVERWEAR.dbo.StkFer_Articulos   s_n ON s_n.CodArticulo = r.CodArticu
+INNER JOIN EVERWEAR.dbo.Stk_TiposArticulos t_n ON t_n.CodigoTipo  = s_n.NacionalImportado
+"""
+_JOIN_NACIONAL_STOCK = """
+INNER JOIN EVERWEAR.dbo.StkFer_Articulos   s_n ON s_n.CodArticulo = a.CodArticulo
+INNER JOIN EVERWEAR.dbo.Stk_TiposArticulos t_n ON t_n.CodigoTipo  = s_n.NacionalImportado
+"""
+_COND_NACIONAL = "AND t_n.Descripcion = 'Nacional'"
+
+# Artículos sin Nivel1 resuelto: mismo rótulo que usa el dashboard /compras
+# para no inventar una etiqueta nueva por vista.
+LINEA_SIN_ASIGNAR = "SIN LÍNEA"
+
 # NOTA rendimiento (2026-08-12, timeout real reportado): traer CADA
 # renglón de pedido de TODA la empresa para sumar en Python era demasiado
 # lento (>45s, nunca llegaba a responder). Se mueve el SUM a SQL Server,
@@ -736,7 +761,7 @@ def fetch_consumo_articulo(codigo: str, desde: str, hasta: str):
 # mismo FechaPedido int-días-desde-1800-12-28 que ya usa el resto de este
 # archivo (confirmado: la versión de un solo artículo ya compara ese mismo
 # campo contra enteros directamente, sin CAST).
-SQL_CONSUMO_TODOS = """
+SQL_CONSUMO_TODOS = f"""
 SELECT
     LTRIM(RTRIM(r.CodArticu))                                     AS CodArticu,
     DATEPART(year,  DATEADD(day, cab.FechaPedido, '1800-12-28'))  AS Anio,
@@ -747,7 +772,9 @@ SELECT
 FROM EVERWEAR.dbo.VenFer_PedidoReng r
 INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = r.NroMovVenta
 LEFT  JOIN MAGNUS_SITD.dbo.Pedido_Estados     est ON cab.EstadoPedido = est.Ped_Estado
+{_JOIN_NACIONAL_RENG}
 WHERE cab.FechaPedido BETWEEN ? AND ?
+  {_COND_NACIONAL}
 GROUP BY LTRIM(RTRIM(r.CodArticu)),
          DATEPART(year,  DATEADD(day, cab.FechaPedido, '1800-12-28')),
          DATEPART(month, DATEADD(day, cab.FechaPedido, '1800-12-28')),
@@ -755,9 +782,12 @@ GROUP BY LTRIM(RTRIM(r.CodArticu)),
          est.Ped_EstadoDescripcion
 """
 
-SQL_STOCK_TODOS = """
+SQL_STOCK_TODOS = f"""
 SELECT LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo, a.Deposito, SUM(a.StkReal) AS Stock
 FROM EVERWEAR.dbo.Stk_ArticSucursalDeposito a
+{_JOIN_NACIONAL_STOCK}
+WHERE 1 = 1
+  {_COND_NACIONAL}
 GROUP BY LTRIM(RTRIM(a.CodArticulo)), a.Deposito
 """
 
@@ -780,20 +810,29 @@ WHERE LTRIM(RTRIM(s.CodArticulo)) IN ({ph})
 SQL_CODIGOS_POR_LINEA = """
 SELECT LTRIM(RTRIM(s.CodArticulo)) AS CodArticulo
 FROM EVERWEAR.dbo.[StkFer_Articulos] s
+INNER JOIN EVERWEAR.dbo.[Stk_TiposArticulos] t_n ON t_n.CodigoTipo    = s.NacionalImportado
 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s.ArticuloPatron
 LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]        n1 ON n1.Nivel1         = ap.Nivel1
 WHERE LTRIM(RTRIM(n1.Detalle)) LIKE ?
+  AND t_n.Descripcion = 'Nacional'
 """
 
 # Líneas del catálogo con cantidad de artículos en cada una — para el
 # datalist del input "línea" de /compras/consumo (
 # 2026-08-12): así se ve en la propia vista cuántos artículos hay por línea,
 # sin tener que adivinar de antemano si conviene dropdown o texto libre.
+#
+# 2026-09-07: cuenta SOLO artículos nacionales, para que el número del
+# datalist sea el mismo universo que después suman las tablas de artículos y
+# de líneas (antes decía "N artículo(s)" contando importados y fabriles que
+# la vista nunca iba a mostrar).
 SQL_LINEAS_COUNT = """
 SELECT LTRIM(RTRIM(n1.Detalle)) AS Linea, COUNT(DISTINCT s.CodArticulo) AS Cantidad
 FROM EVERWEAR.dbo.[StkFer_Articulos] s
+INNER JOIN EVERWEAR.dbo.[Stk_TiposArticulos] t_n ON t_n.CodigoTipo    = s.NacionalImportado
 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s.ArticuloPatron
 LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]        n1 ON n1.Nivel1         = ap.Nivel1
+WHERE t_n.Descripcion = 'Nacional'
 GROUP BY LTRIM(RTRIM(n1.Detalle))
 """
 
@@ -838,6 +877,10 @@ def fetch_consumo_articulos(
     vez: vendido por mes, total, promedio, máximo, mínimo > 0 y stock actual
     (1+2+3), uno por artículo — ORDENADO Y PAGINADO EN EL SERVIDOR (de a
     `page_size`, default 20).
+
+    SOLO ARTÍCULOS NACIONALES (2026-09-07, ver _COND_NACIONAL): tanto las
+    ventas como el stock se recortan en SQL a tipo 'Nacional'. Importados,
+    Originales y Fabriles no suman ni aparecen como fila.
 
     `export=True` (para el botón "Exportar Excel" de /compras/consumo, 2026-08-12) devuelve TODOS los artículos que matchean el filtro
     de una sola vez, sin paginar — y exige `linea` (no alcanza con `q`): sin
@@ -1037,6 +1080,236 @@ def fetch_consumo_articulos(
         "sort": sort,
         "sortDir": "asc" if not reverse else "desc",
         "articulos": page_rows,
+    }
+
+
+# ── Consumo mensual por LÍNEA + stock (vista "Líneas" de /compras/consumo) ───
+# 2026-09-07: mismo tablero que la vista "Artículos", pero con
+# la línea (Stk_Nivel1.Detalle) como unidad en vez del artículo — vendido,
+# promedio mensual, máximo, mínimo > 0, stock actual y coberturas.
+#
+# La agrupación se hace ENTERA EN SQL por (línea, año, mes, CompCodigo,
+# Estado): no se pasa por el artículo intermedio ni se resuelve la línea de
+# cada código en Python (que sería un dict de decenas de miles de entradas).
+# El filtrado por blacklist de comprobantes + _es_valido sigue en Python,
+# igual que en las otras dos funciones de consumo, así que el criterio de
+# "vendido" es idéntico; lo único que cambia es el nivel de agregación.
+#
+# Máximo/mínimo son del MES DE LA LÍNEA COMPLETA (la suma de todos sus
+# artículos en ese mes), no el máximo de sus artículos — es la lectura que
+# tiene sentido para decidir compras por línea.
+#
+# {q} y {linea} los completa fetch_consumo_lineas con los filtros aplicados
+# (parametrizados, nunca interpolados).
+SQL_CONSUMO_LINEAS = f"""
+SELECT
+    ISNULL(NULLIF(LTRIM(RTRIM(n1.Detalle)), ''), '{LINEA_SIN_ASIGNAR}')  AS Linea,
+    DATEPART(year,  DATEADD(day, cab.FechaPedido, '1800-12-28'))         AS Anio,
+    DATEPART(month, DATEADD(day, cab.FechaPedido, '1800-12-28'))         AS Mes,
+    cab.CompCodigo                                                        AS CompCodigo,
+    est.Ped_EstadoDescripcion                                             AS Estado,
+    SUM(r.CantidadPedida)                                                 AS Cantidad
+FROM EVERWEAR.dbo.VenFer_PedidoReng r
+INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = r.NroMovVenta
+LEFT  JOIN MAGNUS_SITD.dbo.Pedido_Estados     est ON cab.EstadoPedido = est.Ped_Estado
+{_JOIN_NACIONAL_RENG}
+LEFT  JOIN EVERWEAR.dbo.[StkFer_ArtParamet]   ap ON ap.ArticuloPatron = s_n.ArticuloPatron
+LEFT  JOIN EVERWEAR.dbo.[Stk_Nivel1]          n1 ON n1.Nivel1         = ap.Nivel1
+WHERE cab.FechaPedido BETWEEN ? AND ?
+  {_COND_NACIONAL}
+  {{q}}
+  {{linea}}
+GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(n1.Detalle)), ''), '{LINEA_SIN_ASIGNAR}'),
+         DATEPART(year,  DATEADD(day, cab.FechaPedido, '1800-12-28')),
+         DATEPART(month, DATEADD(day, cab.FechaPedido, '1800-12-28')),
+         cab.CompCodigo,
+         est.Ped_EstadoDescripcion
+"""
+
+# Stock actual por línea (depósitos 1/2/3) + cuántos artículos nacionales
+# tiene cada una. Se cuenta sobre Stk_ArticSucursalDeposito y no sobre el
+# catálogo entero porque la fila de la tabla habla del stock: "artículos" acá
+# es "artículos nacionales de la línea con registro de stock", que es el
+# universo que suma la columna Stock.
+SQL_STOCK_LINEAS = f"""
+SELECT
+    ISNULL(NULLIF(LTRIM(RTRIM(n1.Detalle)), ''), '{LINEA_SIN_ASIGNAR}')  AS Linea,
+    COUNT(DISTINCT a.CodArticulo)                                        AS Articulos,
+    SUM(a.StkReal)                                                       AS Stock
+FROM EVERWEAR.dbo.Stk_ArticSucursalDeposito a
+{_JOIN_NACIONAL_STOCK}
+LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s_n.ArticuloPatron
+LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]        n1 ON n1.Nivel1         = ap.Nivel1
+WHERE a.Deposito IN ({','.join(str(d) for d in CONSUMO_DEPOSITOS)})
+  {_COND_NACIONAL}
+  {{q}}
+  {{linea}}
+GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(n1.Detalle)), ''), '{LINEA_SIN_ASIGNAR}')
+"""
+
+_SORT_KEYS_LINEAS = ("linea", "stock", "totalVendido", "promedio", "maximo", "minimo")
+
+
+def fetch_consumo_lineas(
+    desde: str,
+    hasta: str,
+    sort: str = "totalVendido",
+    sort_dir: str = "desc",
+    page: int = 1,
+    page_size: int = 20,
+    q: str | None = None,
+    linea: str | None = None,
+    export: bool = False,
+):
+    """Misma tabla que fetch_consumo_articulos pero agregada por LÍNEA
+    (Stk_Nivel1.Detalle), sobre artículos NACIONALES únicamente.
+
+    Mismo contrato que la vista de artículos: `q` (substring de código) y
+    `linea` (substring del nombre de la línea) se combinan con AND y hace
+    falta AL MENOS UNO — no porque la respuesta sea pesada (son decenas de
+    filas), sino para mantener un solo criterio entre las dos vistas y no
+    dejar una puerta abierta a escanear el rango completo sin querer.
+
+    `export=True` devuelve todas las líneas del filtro sin paginar y exige
+    `linea`, igual que la vista de artículos."""
+    q_norm = (q or "").strip()
+    linea_norm = (linea or "").strip()
+    if not q_norm and not linea_norm:
+        raise ValueError("Ingresá 'q' (código) o 'linea' para buscar")
+    if export and not linea_norm:
+        raise ValueError("Elegí una línea para exportar")
+
+    meses = _meses_rango(str(desde)[:7], str(hasta)[:7])
+    y1, m1 = int(meses[0][:4]), int(meses[0][5:7])
+    y2, m2 = int(meses[-1][:4]), int(meses[-1][5:7])
+    d1 = date(y1, m1, 1)
+    d2 = (date(y2 + 1, 1, 1) if m2 == 12 else date(y2, m2 + 1, 1)) - timedelta(days=1)
+    d1n = (d1 - BASE_DATE).days
+    d2n = (d2 - BASE_DATE).days
+    n_meses = len(meses)
+    meses_set = set(meses)
+
+    sort = sort if sort in _SORT_KEYS_LINEAS else "totalVendido"
+    reverse = str(sort_dir).lower() != "asc"
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 20), 200))
+
+    # Los filtros se arman como fragmentos con `?` y los valores se pasan
+    # aparte — el texto del cliente NUNCA se interpola en el SQL.
+    frag_q_reng = "AND r.CodArticu LIKE ?" if q_norm else ""
+    frag_q_stock = "AND a.CodArticulo LIKE ?" if q_norm else ""
+    frag_linea = "AND LTRIM(RTRIM(n1.Detalle)) LIKE ?" if linea_norm else ""
+    params_reng: list = [d1n, d2n]
+    params_stock: list = []
+    if q_norm:
+        params_reng.append(f"%{q_norm}%")
+        params_stock.append(f"%{q_norm}%")
+    if linea_norm:
+        params_reng.append(f"%{linea_norm}%")
+        params_stock.append(f"%{linea_norm}%")
+
+    ventas: dict[str, dict[str, float]] = {}
+    stock_linea: dict[str, float] = {}
+    articulos_linea: dict[str, int] = {}
+
+    conn = get_connection("EVERWEAR")
+    try:
+        cur = conn.cursor()
+        cur.execute("SET DATEFORMAT ymd; SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+
+        cur.execute(
+            SQL_CONSUMO_LINEAS.format(q=frag_q_reng, linea=frag_linea),
+            params_reng,
+        )
+        cols = [c[0] for c in cur.description]
+        for row in cur.fetchall():
+            d = dict(zip(cols, row))
+            lin = (str(d.get("Linea") or "")).strip() or LINEA_SIN_ASIGNAR
+            try:
+                comp = int(d.get("CompCodigo")) if d.get("CompCodigo") is not None else None
+            except (TypeError, ValueError):
+                comp = None
+            if comp in COMP_CODIGOS_EXCLUIDOS:
+                continue
+            if not _es_valido(d.get("Estado")):
+                continue
+            try:
+                anio = int(d.get("Anio"))
+                mes_n = int(d.get("Mes"))
+            except (TypeError, ValueError):
+                continue
+            key = f"{anio:04d}-{mes_n:02d}"
+            if key not in meses_set:
+                continue
+            m = ventas.get(lin)
+            if m is None:
+                m = {mes: 0.0 for mes in meses}
+                ventas[lin] = m
+            m[key] += float(_safe(d.get("Cantidad")) or 0)
+
+        cur.execute(
+            SQL_STOCK_LINEAS.format(q=frag_q_stock, linea=frag_linea),
+            params_stock,
+        )
+        for lin, cant_art, stk in cur.fetchall():
+            lin = (str(lin or "")).strip() or LINEA_SIN_ASIGNAR
+            stock_linea[lin] = stock_linea.get(lin, 0.0) + float(_safe(stk) or 0)
+            articulos_linea[lin] = articulos_linea.get(lin, 0) + int(cant_art or 0)
+
+        # Una fila por línea con venta en el rango O con stock hoy — mismo
+        # criterio de universo que la vista de artículos.
+        nombres_lineas = sorted(set(ventas.keys()) | set(stock_linea.keys()))
+        filas = []
+        for lin in nombres_lineas:
+            ventas_lin = ventas.get(lin)
+            cantidades = (
+                [round(ventas_lin[m], 2) for m in meses] if ventas_lin else [0.0] * n_meses
+            )
+            total = round(sum(cantidades), 2)
+            promedio = round(total / n_meses, 2) if n_meses else 0.0
+            maximo = max(cantidades) if cantidades else 0.0
+            positivos = [c for c in cantidades if c > 0]
+            minimo = min(positivos) if positivos else None
+            filas.append({
+                "linea": lin,
+                "articulos": articulos_linea.get(lin, 0),
+                "totalVendido": total,
+                "promedio": promedio,
+                "maximo": maximo,
+                "minimo": minimo,
+                "stock": round(stock_linea.get(lin, 0.0), 2),
+            })
+
+        if sort == "linea":
+            filas.sort(key=lambda r: r["linea"], reverse=reverse)
+        else:
+            filas.sort(key=lambda r: (r[sort] if r[sort] is not None else -1), reverse=reverse)
+
+        total_items = len(filas)
+        if export:
+            page = 1
+            page_size = total_items or 1
+            total_pages = 1
+            page_rows = filas
+        else:
+            total_pages = max(1, -(-total_items // page_size))
+            page = min(page, total_pages)
+            start = (page - 1) * page_size
+            page_rows = filas[start:start + page_size]
+    finally:
+        conn.close()
+
+    return {
+        "desde": meses[0],
+        "hasta": meses[-1],
+        "mesesEnRango": n_meses,
+        "total": total_items,
+        "page": page,
+        "pageSize": page_size,
+        "totalPages": total_pages,
+        "sort": sort,
+        "sortDir": "asc" if not reverse else "desc",
+        "lineas": page_rows,
     }
 
 

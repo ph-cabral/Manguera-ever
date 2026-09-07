@@ -4,6 +4,7 @@ import {
   Loader2, AlertTriangle, Search, LineChart, Package, Sigma, Divide,
   ArrowUpToLine, ArrowDownToLine, Warehouse, Table2,
   ArrowUp, ArrowDown, ArrowUpDown, ChevronLeft, ChevronRight, Download,
+  Layers, Flag,
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import KpiCard from "@/app/rrhh/components/KpiCard";
@@ -46,6 +47,18 @@ import { abrirPicker } from "@/components/ui/abrirPicker";
 // una línea aplicada (appliedLinea) — código solo no alcanza, para no
 // exportar por error una porción enorme del catálogo. Mismo chequeo también
 // del lado del servidor (route.ts e indicadores-api/compras.py).
+//
+// Agrupación Artículos ↔ Líneas + recorte a NACIONALES (2026-09-07):
+//   · Botón en la barra de filtros que alterna la unidad de la tabla entre
+//     ARTÍCULO y LÍNEA (Stk_Nivel1), manteniendo las mismas columnas y el
+//     mismo criterio de "vendido": total, promedio mensual, máximo, mínimo>0,
+//     stock y coberturas. En Líneas, máximo/mínimo son del mes de la línea
+//     entera (suma de sus artículos), no el máximo de un artículo suelto.
+//     Fuente: /api/compras/consumo-lineas (+ /export).
+//     Clic en una fila de Líneas → vuelve a Artículos con esa línea aplicada.
+//   · TODO lo que suma la vista (las dos tablas, el detalle y el contador del
+//     datalist de líneas) se recorta a artículos de tipo NACIONAL. Se hace en
+//     SQL, no en el front. Importados, Originales y Fabriles quedan afuera.
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface MesRow {
@@ -116,7 +129,39 @@ interface RespTabla {
   totalPages: number;
   articulos: ArticuloRow[];
 }
-type SortKey = "codigo" | "stock" | "totalVendido" | "promedio" | "maximo" | "minimo";
+
+// ── Vista "Tabla" agrupada por LÍNEA (2026-09-07) ──────────
+// Mismas métricas que ArticuloRow, con la línea (Stk_Nivel1.Detalle) como
+// unidad. `articulos` = cuántos artículos nacionales de esa línea tienen
+// registro de stock — el universo que suma la columna Stock.
+type Agrupacion = "articulos" | "lineas";
+// Rótulo de los artículos sin Nivel1 resuelto — tiene que coincidir con
+// LINEA_SIN_ASIGNAR de indicadores-api/compras.py.
+const LINEA_SIN_LINEA = "SIN LÍNEA";
+interface LineaRow {
+  linea: string;
+  articulos: number;
+  totalVendido: number;
+  promedio: number;
+  maximo: number;
+  minimo: number | null;
+  stock: number;
+}
+interface RespLineas {
+  desde: string;
+  hasta: string;
+  mesesEnRango: number;
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  lineas: LineaRow[];
+}
+
+// "codigo" solo aplica a la tabla de artículos y "linea" solo a la de líneas;
+// el resto de las claves son comunes a las dos (ver toggleAgrupacion, que
+// traduce una por la otra al cambiar de unidad).
+type SortKey = "codigo" | "linea" | "stock" | "totalVendido" | "promedio" | "maximo" | "minimo";
 const PAGE_SIZE = 20;
 
 // Encabezado de columna ordenable (clic alterna asc/desc; cambiar de columna
@@ -181,7 +226,12 @@ export default function ComprasConsumoPage() {
   // indicadores-api con un catálogo grande) — cada cambio de página, orden o
   // búsqueda dispara un fetch nuevo con esos parámetros.
   const [vista, setVista] = useState<Vista>("tabla");
+  // Unidad de la tabla: artículo (default) o línea (2026-09-07).
+  // Comparten filtros, rango, orden, paginación y estados de carga/error —
+  // solo cambia el endpoint y las columnas de identidad de la fila.
+  const [agrupacion, setAgrupacion] = useState<Agrupacion>("articulos");
   const [tablaData, setTablaData] = useState<RespTabla | null>(null);
+  const [lineasData, setLineasData] = useState<RespLineas | null>(null);
   const [tablaLoading, setTablaLoading] = useState(false);
   const [tablaError, setTablaError] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("totalVendido");
@@ -220,6 +270,7 @@ export default function ComprasConsumoPage() {
   const loadTabla = useCallback(async () => {
     if (!tieneFiltro) {
       setTablaData(null);
+      setLineasData(null);
       setTablaError(null);
       return;
     }
@@ -236,20 +287,30 @@ export default function ComprasConsumoPage() {
       });
       if (appliedCod) params.set("q", appliedCod);
       if (appliedLinea) params.set("linea", appliedLinea);
-      const res = await fetch(`/api/compras/consumo-articulos?${params.toString()}`, {
-        cache: "no-store",
-      });
+      // Mismo contrato de query en las dos unidades — solo cambia el endpoint.
+      const endpoint =
+        agrupacion === "lineas"
+          ? "/api/compras/consumo-lineas"
+          : "/api/compras/consumo-articulos";
+      const res = await fetch(`${endpoint}?${params.toString()}`, { cache: "no-store" });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
-      setTablaData(j);
+      if (agrupacion === "lineas") {
+        setLineasData(j);
+        setTablaData(null);
+      } else {
+        setTablaData(j);
+        setLineasData(null);
+      }
     } catch (e) {
       setTablaError(e instanceof Error ? e.message : "Error al cargar");
       setTablaData(null);
+      setLineasData(null);
     } finally {
       setTablaLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refreshTick solo fuerza el refetch, no participa del fetch en sí
-  }, [desde, hasta, sortKey, sortDir, page, appliedCod, appliedLinea, tieneFiltro, refreshTick]);
+  }, [desde, hasta, sortKey, sortDir, page, appliedCod, appliedLinea, tieneFiltro, agrupacion, refreshTick]);
 
   // Carga automática cada vez que cambia el rango/orden/página, o cuando se
   // aplica un filtro nuevo (Refrescar) — mientras se esté en la vista
@@ -288,7 +349,12 @@ export default function ComprasConsumoPage() {
         linea: appliedLinea,
       });
       if (appliedCod) params.set("q", appliedCod);
-      const res = await fetch(`/api/compras/consumo-articulos/export?${params.toString()}`);
+      // Se exporta lo que se está viendo: artículos o líneas.
+      const endpoint =
+        agrupacion === "lineas"
+          ? "/api/compras/consumo-lineas/export"
+          : "/api/compras/consumo-articulos/export";
+      const res = await fetch(`${endpoint}?${params.toString()}`);
       if (!res.ok) {
         const j = await res.json().catch(() => ({}));
         throw new Error(j.error || `HTTP ${res.status}`);
@@ -297,7 +363,7 @@ export default function ComprasConsumoPage() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `consumo_${appliedLinea}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.download = `consumo_${agrupacion === "lineas" ? "lineas_" : ""}${appliedLinea}_${new Date().toISOString().slice(0, 10)}.xlsx`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -305,7 +371,7 @@ export default function ComprasConsumoPage() {
     } finally {
       setExporting(false);
     }
-  }, [desde, hasta, sortKey, sortDir, appliedLinea, appliedCod]);
+  }, [desde, hasta, sortKey, sortDir, appliedLinea, appliedCod, agrupacion]);
 
   // Abre el detalle de un artículo (clic en una fila de la tabla).
   const abrirDetalle = useCallback((codigo: string) => {
@@ -326,9 +392,41 @@ export default function ComprasConsumoPage() {
     [sortKey],
   );
 
+  // Alterna la unidad de la tabla (2026-09-07). Vuelve a la
+  // página 1 y traduce el orden por identidad de fila entre las dos unidades
+  // ("Código" ↔ "Línea"), que es la única clave que no existe en ambas.
+  const toggleAgrupacion = useCallback(() => {
+    const next: Agrupacion = agrupacion === "articulos" ? "lineas" : "articulos";
+    setAgrupacion(next);
+    setSortKey((k) =>
+      next === "lineas" ? (k === "codigo" ? "linea" : k) : k === "linea" ? "codigo" : k,
+    );
+    setPage(1);
+  }, [agrupacion]);
+
+  // Clic en una fila de la tabla de líneas: aplica esa línea como filtro y
+  // baja a la tabla de artículos — el mismo gesto de "abrir" que en la tabla
+  // de artículos lleva al detalle mensual.
+  const abrirLinea = useCallback((nombreLinea: string) => {
+    // "SIN LÍNEA" es el rótulo de los artículos sin Nivel1 resuelto, no un
+    // nombre real del catálogo: usarlo como filtro no traería nada, así que
+    // esa fila no abre nada (ver LINEA_SIN_ASIGNAR en compras.py).
+    if (nombreLinea === LINEA_SIN_LINEA) return;
+    setFiltroLinea(nombreLinea);
+    setAppliedLinea(nombreLinea);
+    setAgrupacion("articulos");
+    setSortKey((k) => (k === "linea" ? "codigo" : k));
+    setPage(1);
+  }, []);
+
   const filasTabla = tablaData?.articulos ?? [];
-  const totalPages = tablaData?.totalPages ?? 1;
-  const pageClamped = tablaData?.page ?? page;
+  const filasLineas = lineasData?.lineas ?? [];
+  // Datos y paginación de la tabla que se está mostrando, sea cual sea la unidad.
+  const datosVisibles: RespTabla | RespLineas | null =
+    agrupacion === "lineas" ? lineasData : tablaData;
+  const hayFilas = agrupacion === "lineas" ? filasLineas.length > 0 : filasTabla.length > 0;
+  const totalPages = datosVisibles?.totalPages ?? 1;
+  const pageClamped = datosVisibles?.page ?? page;
 
   const load = useCallback(async () => {
     const codigo = cod.trim();
@@ -411,12 +509,25 @@ export default function ComprasConsumoPage() {
       <main className="max-w-[1400px] mx-auto px-4 md:px-8 py-8 space-y-6">
         <div>
           <h1 className="text-yellow-400 font-bold text-xl uppercase tracking-wide flex items-center gap-2">
-            <LineChart size={20} /> Consumo por artículo
+            <LineChart size={20} />{" "}
+            {vista === "tabla" && agrupacion === "lineas"
+              ? "Consumo por línea"
+              : "Consumo por artículo"}
           </h1>
           <p className="text-zinc-500 text-sm mt-1">
             {vista === "individual"
               ? "Cantidad vendida por mes (pedidos Cerrados/Facturados) de un artículo en el rango de meses elegido, con total, promedio mensual, máximo, mínimo > 0 y stock actual por depósito."
-              : "Buscá por código y/o línea, y hacé clic en una fila para ver el detalle mensual de ese artículo. Total vendido, promedio mensual, máximo, mínimo > 0 y stock actual por artículo."}
+              : agrupacion === "lineas"
+                ? "Buscá por código y/o línea, y hacé clic en una fila para ver los artículos de esa línea. Total vendido, promedio mensual, máximo, mínimo > 0 y stock actual por línea — máximo y mínimo son del mes de la línea entera."
+                : "Buscá por código y/o línea, y hacé clic en una fila para ver el detalle mensual de ese artículo. Total vendido, promedio mensual, máximo, mínimo > 0 y stock actual por artículo."}
+          </p>
+          {/* El recorte a nacionales no es un filtro que el usuario pueda
+              apagar — se avisa acá para que nadie compare estos números
+              contra un reporte que incluya importados. */}
+          <p className="text-zinc-600 text-xs mt-1.5 flex items-center gap-1.5">
+            <Flag size={12} className="text-zinc-600" />
+            Suma únicamente artículos <span className="text-zinc-400">nacionales</span> — importados,
+            originales y de fábrica quedan afuera de todos los totales.
           </p>
         </div>
 
@@ -707,13 +818,35 @@ export default function ComprasConsumoPage() {
                 {tablaLoading ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />}
                 Refrescar
               </button>
+              {/* Unidad de la tabla: artículo ↔ línea (2026-09-07).
+                  Mantiene filtros, rango y orden; solo cambia qué representa
+                  cada fila. Amarillo cuando está agrupado por línea, para que
+                  se vea de un vistazo que los números no son por artículo. */}
+              <button
+                type="button"
+                onClick={toggleAgrupacion}
+                disabled={tablaLoading}
+                title={
+                  agrupacion === "articulos"
+                    ? "Ver los mismos números agrupados por línea"
+                    : "Volver a la tabla por artículo"
+                }
+                className={`btn-anim flex items-center gap-2 text-sm rounded-md px-4 py-2 border transition-colors disabled:opacity-40 ${
+                  agrupacion === "lineas"
+                    ? "border-yellow-400 bg-yellow-400/10 text-yellow-400 font-semibold"
+                    : "border-zinc-700 text-zinc-200 hover:border-yellow-400"
+                }`}
+              >
+                {agrupacion === "lineas" ? <Layers size={15} /> : <Package size={15} />}
+                {agrupacion === "lineas" ? "Líneas" : "Artículos"}
+              </button>
               <button
                 type="button"
                 onClick={handleExport}
                 disabled={exporting || !appliedLinea}
                 title={
                   appliedLinea
-                    ? "Exportar a Excel los artículos de esta línea (filtro actual)"
+                    ? `Exportar a Excel ${agrupacion === "lineas" ? "las líneas" : "los artículos"} del filtro actual`
                     : "Elegí una línea y presioná Refrescar para poder exportar"
                 }
                 className="btn-anim flex items-center gap-2 border border-zinc-700 text-zinc-200 text-sm rounded-md px-4 py-2 hover:border-yellow-400 disabled:opacity-40 transition-colors"
@@ -721,9 +854,10 @@ export default function ComprasConsumoPage() {
                 {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
                 Exportar Excel
               </button>
-              {tablaData && (
+              {datosVisibles && (
                 <span className="text-sm text-zinc-500 pb-2">
-                  {tablaData.total} artículo(s){tablaLoading ? " — actualizando…" : ""}
+                  {datosVisibles.total} {agrupacion === "lineas" ? "línea(s)" : "artículo(s)"}
+                  {tablaLoading ? " — actualizando…" : ""}
                 </span>
               )}
             </div>
@@ -743,28 +877,155 @@ export default function ComprasConsumoPage() {
               </div>
             )}
 
-            {tieneFiltro && !tablaData && !tablaLoading && !tablaError && (
+            {tieneFiltro && !datosVisibles && !tablaLoading && !tablaError && (
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-16 flex flex-col items-center gap-3 text-center">
                 <Table2 size={40} className="text-zinc-700" />
-                <p className="text-zinc-500 text-sm">Cargando la tabla de artículos…</p>
+                <p className="text-zinc-500 text-sm">
+                  Cargando la tabla de {agrupacion === "lineas" ? "líneas" : "artículos"}…
+                </p>
               </div>
             )}
 
-            {tieneFiltro && !tablaData && tablaLoading && (
+            {tieneFiltro && !datosVisibles && tablaLoading && (
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-16 flex flex-col items-center gap-3 text-center">
                 <Loader2 size={40} className="text-yellow-400 animate-spin" />
                 <p className="text-zinc-500 text-sm">Consultando la base…</p>
               </div>
             )}
 
-            {tablaData && filasTabla.length === 0 && (
+            {datosVisibles && !hayFilas && (
               <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-16 flex flex-col items-center gap-3 text-center">
                 <Search size={40} className="text-zinc-700" />
-                <p className="text-zinc-500 text-sm">Sin artículos que coincidan con la búsqueda.</p>
+                <p className="text-zinc-500 text-sm">
+                  Sin {agrupacion === "lineas" ? "líneas" : "artículos"} nacionales que coincidan con
+                  la búsqueda.
+                </p>
               </div>
             )}
 
-            {tablaData && filasTabla.length > 0 && (
+            {/* Tabla por LÍNEA — mismas columnas y semáforo que la de
+                artículos (2026-09-07). */}
+            {agrupacion === "lineas" && lineasData && filasLineas.length > 0 && (
+              <div
+                className={`rounded-xl border border-zinc-800 overflow-hidden transition-opacity ${
+                  tablaLoading ? "opacity-50 pointer-events-none" : ""
+                }`}
+              >
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-max text-sm">
+                    <thead className="bg-[#1A1A1A] text-zinc-400">
+                      <tr>
+                        <ThSort label="Línea" sortKey="linea" active={sortKey} dir={sortDir} onClick={toggleSort} />
+                        <th
+                          className="px-3 py-2 font-medium text-right whitespace-nowrap"
+                          title="Artículos nacionales de la línea con registro de stock"
+                        >
+                          Artículos
+                        </th>
+                        <ThSort label="Stock" sortKey="stock" active={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                        <ThSort label="Vendido" sortKey="totalVendido" active={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                        <ThSort label="Promedio" sortKey="promedio" active={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                        <ThSort label="Máximo" sortKey="maximo" active={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                        <th
+                          className="px-3 py-2 font-medium text-right whitespace-nowrap text-zinc-400"
+                          title="Stock actual / Máximo mensual de la línea"
+                        >
+                          Cobertura máx.
+                        </th>
+                        <ThSort label="Mínimo" sortKey="minimo" active={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
+                        <th
+                          className="px-3 py-2 font-medium text-right whitespace-nowrap text-zinc-400"
+                          title="Stock actual / Mínimo mensual de la línea"
+                        >
+                          Cobertura mín.
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filasLineas.map((r) => {
+                        // Mismas fórmulas que la tabla de artículos: cobertura
+                        // = stock actual sobre el mes pico/piso, semáforo por
+                        // promedio*2 contra el stock.
+                        const cobMax = r.stock > 0 && r.maximo > 0 ? r.stock / r.maximo : null;
+                        const cobMin =
+                          r.stock > 0 && r.minimo != null && r.minimo > 0 ? r.stock / r.minimo : null;
+                        const tone =
+                          r.promedio * 2 > r.stock ? "red" : r.promedio * 2 < r.stock ? "green" : null;
+                        const abrible = r.linea !== LINEA_SIN_LINEA;
+                        return (
+                          <tr
+                            key={r.linea}
+                            onClick={() => abrirLinea(r.linea)}
+                            title={
+                              abrible
+                                ? "Ver los artículos de esta línea"
+                                : "Artículos sin línea cargada en el catálogo — no hay línea que filtrar"
+                            }
+                            className={`border-t border-zinc-800/60 transition-colors ${abrible ? "cursor-pointer" : "cursor-default"} ${
+                              tone === "red"
+                                ? "bg-red-500/10 hover:bg-red-500/20"
+                                : tone === "green"
+                                  ? "bg-green-500/10 hover:bg-green-500/20"
+                                  : "hover:bg-zinc-800/30"
+                            }`}
+                          >
+                            <td className="px-3 py-2 text-zinc-100 whitespace-nowrap">{r.linea}</td>
+                            <td className="px-3 py-2 text-right tabular-nums text-zinc-400">
+                              {fmtNum(r.articulos)}
+                            </td>
+                            <td className={`px-3 py-2 text-right tabular-nums ${r.stock > 0 ? "text-green-400" : "text-zinc-600"}`}>
+                              {fmtNum(r.stock)}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-medium">
+                              {fmtNum(r.totalVendido)}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-zinc-200">
+                              {fmtNum(r.promedio)}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-orange-400">
+                              {fmtNum(r.maximo)}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-orange-300">
+                              {cobMax !== null ? fmtNum(cobMax) : "—"}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-blue-400">
+                              {fmtNum(r.minimo)}
+                            </td>
+                            <td className="px-3 py-2 text-right tabular-nums text-blue-300">
+                              {cobMin !== null ? fmtNum(cobMin) : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="flex items-center justify-between gap-4 border-t border-zinc-800 bg-[#1A1A1A] px-4 py-2.5">
+                  <span className="text-xs text-zinc-500">
+                    Página {pageClamped} de {totalPages} — {lineasData.total} línea(s)
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setPage((p) => Math.max(1, p - 1))}
+                      disabled={tablaLoading || pageClamped <= 1}
+                      className="btn-anim p-1.5 rounded-md border border-zinc-700 text-zinc-400 hover:border-yellow-400 hover:text-yellow-400 disabled:opacity-30"
+                    >
+                      <ChevronLeft size={15} />
+                    </button>
+                    <button
+                      onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                      disabled={tablaLoading || pageClamped >= totalPages}
+                      className="btn-anim p-1.5 rounded-md border border-zinc-700 text-zinc-400 hover:border-yellow-400 hover:text-yellow-400 disabled:opacity-30"
+                    >
+                      <ChevronRight size={15} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {agrupacion === "articulos" && tablaData && filasTabla.length > 0 && (
               <div
                 className={`rounded-xl border border-zinc-800 overflow-hidden transition-opacity ${
                   tablaLoading ? "opacity-50 pointer-events-none" : ""
@@ -782,14 +1043,14 @@ export default function ComprasConsumoPage() {
                         <ThSort label="Máximo" sortKey="maximo" active={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
                         <th
                           className="px-3 py-2 font-medium text-right whitespace-nowrap text-zinc-400"
-                          title="Máximo mensual / Stock actual"
+                          title="Stock actual / Máximo mensual"
                         >
                           Cobertura máx.
                         </th>
                         <ThSort label="Mínimo" sortKey="minimo" active={sortKey} dir={sortDir} onClick={toggleSort} align="right" />
                         <th
                           className="px-3 py-2 font-medium text-right whitespace-nowrap text-zinc-400"
-                          title="Mínimo mensual / Stock actual"
+                          title="Stock actual / Mínimo mensual"
                         >
                           Cobertura mín.
                         </th>
@@ -799,9 +1060,12 @@ export default function ComprasConsumoPage() {
                       {filasTabla.map((r) => {
                         // Cobertura = máximo/mínimo mensual sobre el stock actual (2026-08-12) — cuánto "pesa" un mes pico/piso frente a lo
                         // que hay en stock hoy. Sin stock (0) queda sin definir ("—").
-                        const cobMax = r.stock > 0 ?  r.stock / r.maximo: null;
+                        // El guard por máximo/mínimo > 0 evita el ∞ de un
+                        // artículo con stock y sin ventas en el rango
+                        // (2026-09-07).
+                        const cobMax = r.stock > 0 && r.maximo > 0 ? r.stock / r.maximo : null;
                         const cobMin =
-                          r.stock > 0 && r.minimo != null
+                          r.stock > 0 && r.minimo != null && r.minimo > 0
                             ? r.stock / r.minimo
                             : null;
                         // Semáforo por fila (2026-08-12): promedio*2 vs

@@ -43,8 +43,10 @@ import time
 
 from db import get_connection
 from cartera import SQL_JOIN_CARTERA, params_cartera
+from subempresas import filas_dos, sql_prueba, unir
 from ventas import (
     BASE_DATE,
+    COMPROBANTES_AJUSTE,
     COMPROBANTES_VENTA,
     _anio_vacio,
     _case_anio_mes,
@@ -152,6 +154,14 @@ _MONTO = (
     "ELSE (r.Cantidad * r.PrecioVenta) * -1 END"
 )
 
+# La otra sub-empresa. PRUEBA (`PRU_Ven_*`) también factura bulonería (1,8M en
+# 2026) y sus notas de crédito también restan: las diez consultas de este
+# módulo se corren contra las dos y se suman las filas en Python. La lista
+# blanca propia de PRUEBA y la transformación viven en subempresas.py.
+def _prueba(sql: str) -> str:
+    return sql_prueba(sql, COMPROBANTES_VENTA, COMPROBANTES_AJUSTE)
+
+
 _TTL_SEG = 15 * 60
 _CACHE: dict[tuple, tuple[float, dict]] = {}
 
@@ -203,21 +213,24 @@ SELECT c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre, SUM({_MONTO}) AS 
 {joins}{_JOIN_ART}{where}
   AND {COND_BULON}
 GROUP BY c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre))
-HAVING SUM({_MONTO}) > 0
-ORDER BY MontoNeto DESC
 """
+    # El HAVING y el ORDER BY se resuelven en Python: con dos sub-empresas el
+    # corte va sobre la SUMA de las dos y ningún ORDER BY de una consulta sola
+    # ordena el ranking final.
     conn, cur = _conn()
     try:
-        cur.execute(sql, params)
         clientes = [
             {
                 "numero": int(cod),
                 "nombre": (str(nom).strip() if nom else None),
                 "monto": round(float(_safe(monto) or 0), 2),
             }
-            for cod, nom, monto in cur.fetchall()
+            for cod, nom, monto in unir(
+                filas_dos(cur, sql, _prueba(sql), params), (0,), (2,))
             if cod is not None
         ]
+        clientes = [c for c in clientes if c["monto"] > 0]
+        clientes.sort(key=lambda c: c["monto"], reverse=True)
         return _guardar(key, {
             "desde": f"{desde_ym[0]:04d}-{desde_ym[1]:02d}",
             "hasta": f"{hasta_ym[0]:04d}-{hasta_ym[1]:02d}",
@@ -266,9 +279,8 @@ GROUP BY LTRIM(RTRIM(s.ArticuloPatron))
 """
     conn, cur = _conn()
     try:
-        cur.execute(sql, params)
         acum: dict[str, list] = {}
-        for patron, detalle, unid, monto in cur.fetchall():
+        for patron, detalle, unid, monto in filas_dos(cur, sql, _prueba(sql), params):
             codigo = (str(patron or "").strip()) or SIN_PATRON
             a = acum.setdefault(codigo, [0.0, 0.0, None])
             a[0] += float(_safe(unid) or 0)
@@ -344,9 +356,10 @@ GROUP BY vc.vendedor
 """
     conn, cur = _conn()
     try:
-        cur.execute(sql, params)
         items = []
-        for cod, nom, unid, monto in cur.fetchall():
+        for cod, nom, unid, monto in unir(
+            filas_dos(cur, sql, _prueba(sql), params), (0,), (2, 3)
+        ):
             if cod is None:
                 continue
             # Los canales (MOSTRADOR, ECOMMERCE, ZONA …) y los dados de baja
@@ -416,10 +429,13 @@ def _matriz(sub: str, params: tuple, anio_anterior: int, anio_actual: int):
     la vuelca en {clave: {nombre, anioAnterior, anioActual}} + totales."""
     conn, cur = _conn()
     try:
-        cur.execute(_WRAP.format(sub=sub), params)
+        sql_m = _WRAP.format(sub=sub)
+        sql_p = _WRAP.format(sub=_prueba(sub))
         filas: dict = {}
         tot_ant, tot_act = _anio_vacio(), _anio_vacio()
-        for clave, nombre, anio_mes, cant, monto in cur.fetchall():
+        for clave, nombre, anio_mes, cant, monto in filas_dos(
+            cur, sql_m, sql_p, params
+        ):
             if clave is None or anio_mes is None:
                 continue
             anio, mes = divmod(int(anio_mes), 100)

@@ -36,6 +36,11 @@ DOS CRITERIOS, unidos (decisión 2026-08-27):
 El historial se acota a CARTERA_MESES para que la cartera no arrastre para
 siempre clientes que el vendedor tuvo hace años (y para no escanear toda la
 historia de Ven_CompCabecera en cada consulta).
+
+El historial mira LAS DOS SUB-EMPRESAS (`Ven_CompCabecera` y
+`PRU_Ven_CompCabecera`, ver subempresas.py): un cliente al que el vendedor
+sólo le facturó por PRUEBA es igual de suyo, y si no entrara acá su venta
+aparecería en el total de la empresa pero no en la cartera del vendedor.
 """
 
 CARTERA_MESES = 24
@@ -48,9 +53,10 @@ _DIA_CORTE = (
 
 # Tabla derivada con los CodCliente de la cartera de UN vendedor.
 #
-# OJO: consume DOS parámetros, los dos el mismo código de vendedor (uno por
-# rama del UNION). Va INMEDIATAMENTE después del FROM de Clientes (alias
-# `c`), así que esos dos parámetros son los PRIMEROS de la query.
+# OJO: consume TRES parámetros, los tres el mismo código de vendedor (uno
+# por rama del UNION: zona, historial MAGNUS, historial PRUEBA). Va
+# INMEDIATAMENTE después del FROM de Clientes (alias `c`), así que esos
+# tres parámetros son los PRIMEROS de la query.
 SQL_JOIN_CARTERA = f"""
 JOIN (
     SELECT c2.CodCliente
@@ -65,12 +71,17 @@ JOIN (
     FROM Ven_CompCabecera vch
     WHERE vch.vendedor = ?
       AND vch.FecMovim >= {_DIA_CORTE}
+    UNION
+    SELECT DISTINCT vcp.CodCliente
+    FROM PRU_Ven_CompCabecera vcp
+    WHERE vcp.vendedor = ?
+      AND vcp.FecMovim >= {_DIA_CORTE}
 ) cart ON cart.CodCliente = c.CodCliente
 """
 
 # Mismo criterio pero como predicado, para chequear UN cliente puntual.
-# También consume dos veces el código de vendedor, y después el cliente dos
-# veces (una por rama).
+# Consume el par (cliente, vendedor) una vez por rama: zona, historial
+# MAGNUS, historial PRUEBA.
 SQL_CLIENTE_ES_DE_VENDEDOR = f"""
 SELECT CASE WHEN EXISTS (
     SELECT 1
@@ -85,16 +96,22 @@ SELECT CASE WHEN EXISTS (
     FROM Ven_CompCabecera vch
     WHERE vch.CodCliente = ? AND vch.vendedor = ?
       AND vch.FecMovim >= {_DIA_CORTE}
+) OR EXISTS (
+    SELECT 1
+    FROM PRU_Ven_CompCabecera vcp
+    WHERE vcp.CodCliente = ? AND vcp.vendedor = ?
+      AND vcp.FecMovim >= {_DIA_CORTE}
 ) THEN 1 ELSE 0 END
 """
 
 
 def params_cartera(vendedor: int) -> tuple:
-    """Los dos parámetros que consume SQL_JOIN_CARTERA. Usar siempre esto en
-    vez de repetir el código a mano — si algún día el criterio cambia de
-    cantidad de parámetros, cambia acá y no en cinco queries."""
+    """Los TRES parámetros que consume SQL_JOIN_CARTERA (zona + historial
+    MAGNUS + historial PRUEBA). Usar siempre esto en vez de repetir el código
+    a mano — el criterio cambió de cantidad de parámetros al sumar la
+    sub-empresa PRUEBA y no hubo que tocar ninguna consulta."""
     v = int(vendedor)
-    return (v, v)
+    return (v, v, v)
 
 
 def cliente_es_de_vendedor(cod_cliente: int, vendedor: int) -> bool:
@@ -108,7 +125,7 @@ def cliente_es_de_vendedor(cod_cliente: int, vendedor: int) -> bool:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
         c, v = int(cod_cliente), int(vendedor)
-        cur.execute(SQL_CLIENTE_ES_DE_VENDEDOR, (c, v, c, v))
+        cur.execute(SQL_CLIENTE_ES_DE_VENDEDOR, (c, v, c, v, c, v))
         row = cur.fetchone()
         return bool(row and row[0])
     finally:
@@ -123,7 +140,7 @@ def cliente_es_de_vendedor(cod_cliente: int, vendedor: int) -> bool:
 # cartera un set de renglones que ya vienen de otra consulta (Magnus +
 # preparado), donde no hay dónde enchufar el JOIN.
 #
-# Consume dos parámetros, los dos el mismo código de vendedor — usar
+# Consume tres parámetros, los tres el mismo código de vendedor — usar
 # params_cartera().
 SQL_CARTERA_CODIGOS = f"""
 SELECT c2.CodCliente
@@ -138,6 +155,11 @@ SELECT DISTINCT vch.CodCliente
 FROM Ven_CompCabecera vch
 WHERE vch.vendedor = ?
   AND vch.FecMovim >= {_DIA_CORTE}
+UNION
+SELECT DISTINCT vcp.CodCliente
+FROM PRU_Ven_CompCabecera vcp
+WHERE vcp.vendedor = ?
+  AND vcp.FecMovim >= {_DIA_CORTE}
 """
 
 

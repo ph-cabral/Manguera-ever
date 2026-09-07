@@ -60,7 +60,10 @@ import time
 
 from cartera import SQL_JOIN_CARTERA, params_cartera
 from db import get_connection
-from ventas import BASE_DATE, COMPROBANTES_AJUSTE, _case_anio_mes, _resolver_rango, _safe
+from subempresas import (COMPROBANTES_AJUSTE_PRUEBA, filas_dos, sql_prueba,
+                         unir)
+from ventas import (BASE_DATE, COMPROBANTES_AJUSTE, COMPROBANTES_VENTA,
+                    _case_anio_mes, _resolver_rango, _safe)
 
 # Comprobantes que ajustan la VENTA y no tienen renglón de artículo. La lista
 # blanca completa vive en ventas.py (COMPROBANTES_VENTA); acá se usa su
@@ -89,6 +92,17 @@ WHERE cc.CompCodigo IN (%s)
 """ % _IN_COMPROBANTES
 
 _IMPORTE = "SUM(CASE cc.DebitoCredito WHEN 1 THEN rd.Importe ELSE rd.Importe * -1 END)"
+
+
+# La sub-empresa PRUEBA (`PRU_Ven_*`) también emite notas de crédito por
+# concepto y hay que restarlas: sin ellas el neto de /ventas/vendedor queda
+# por encima del cubo del BI. Comprobantes de ajuste de PRUEBA: 23/24/25 (no
+# existen 60 ni 62). Ver subempresas.py.
+def _prueba(sql: str) -> str:
+    return sql_prueba(sql, COMPROBANTES_VENTA, COMPROBANTES_AJUSTE)
+
+
+_FROM_PRUEBA = _prueba(_FROM)
 
 _TTL_SEG = 15 * 60
 _CACHE: dict[tuple, tuple[float, dict]] = {}
@@ -143,9 +157,12 @@ def fetch_bonificaciones(desde: str | None = None, hasta: str | None = None,
         return hit
 
     where = _FROM
+    where_p = _FROM_PRUEBA
     params: tuple = (d1, d2)
     if vendedor is not None:
-        where = _FROM + "  AND c.Vendedor = ?\n"
+        cola = "  AND c.Vendedor = ?\n"
+        where = _FROM + cola
+        where_p = _FROM_PRUEBA + cola
         params = (d1, d2, int(vendedor))
 
     anios = tuple(range(desde_ym[0], hasta_ym[0] + 1))
@@ -153,45 +170,56 @@ def fetch_bonificaciones(desde: str | None = None, hasta: str | None = None,
 
     conn, cur = _conn()
     try:
-        cur.execute(f"SELECT {_IMPORTE} AS Importe, COUNT(*) AS Renglones {where}", params)
-        fila = cur.fetchone()
-        total = round(float(_safe(fila[0]) or 0), 2)
-        renglones = int(fila[1] or 0)
+        # Cada apertura se pide a las DOS sub-empresas y se sumariza por su
+        # clave en Python (`unir`). Los códigos de comprobante y de concepto
+        # de ajuste significan lo mismo en las dos (23/24/25 = bonific.
+        # fiscal / bonificación / crédito interno), así que agrupar por código
+        # es correcto; el detalle lo pone el primer grupo que aparece.
+        filas = filas_dos(
+            cur, f"SELECT {_IMPORTE} AS Importe, COUNT(*) AS Renglones {where}",
+            f"SELECT {_IMPORTE} AS Importe, COUNT(*) AS Renglones {where_p}", params)
+        total = round(sum(float(_safe(f[0]) or 0) for f in filas), 2)
+        renglones = sum(int(f[1] or 0) for f in filas)
 
-        cur.execute(
-            f"SELECT cc.CompCodigo, MAX(LTRIM(RTRIM(cc.Detalle))) AS Detalle, "
-            f"{_IMPORTE} AS Importe {where} GROUP BY cc.CompCodigo ORDER BY 3",
-            params)
+        sel = (f"SELECT cc.CompCodigo, MAX(LTRIM(RTRIM(cc.Detalle))) AS Detalle, "
+               f"{_IMPORTE} AS Importe %s GROUP BY cc.CompCodigo")
         por_comprobante = [
             {"comprobante": int(c), "detalle": (d or "").strip() or str(c),
              "monto": round(float(_safe(m) or 0), 2)}
-            for c, d, m in cur.fetchall()
+            for c, d, m in unir(
+                filas_dos(cur, sel % where, sel % where_p, params), (0,), (2,))
         ]
+        por_comprobante.sort(key=lambda x: x["monto"])
 
-        cur.execute(
-            f"SELECT rd.CodConcepto, MAX(LTRIM(RTRIM(cn.Detalle))) AS Detalle, "
-            f"{_IMPORTE} AS Importe {where} GROUP BY rd.CodConcepto ORDER BY 3",
-            params)
+        sel = (f"SELECT rd.CodConcepto, MAX(LTRIM(RTRIM(cn.Detalle))) AS Detalle, "
+               f"{_IMPORTE} AS Importe %s GROUP BY rd.CodConcepto")
         por_concepto = [
             {"concepto": int(c), "detalle": (d or "").strip() or str(c),
              "monto": round(float(_safe(m) or 0), 2)}
-            for c, d, m in cur.fetchall()
+            for c, d, m in unir(
+                filas_dos(cur, sel % where, sel % where_p, params), (0,), (2,))
         ]
+        por_concepto.sort(key=lambda x: x["monto"])
 
-        cur.execute(f"SELECT {case_mes} AS AnioMes, {_IMPORTE} AS Importe "
-                    f"{where} GROUP BY {case_mes} ORDER BY 1", params)
+        sel = (f"SELECT {case_mes} AS AnioMes, {_IMPORTE} AS Importe "
+               f"%s GROUP BY {case_mes}")
         por_mes = [
             {"mes": "%04d-%02d" % (int(am) // 100, int(am) % 100),
              "monto": round(float(_safe(m) or 0), 2)}
-            for am, m in cur.fetchall() if am is not None
+            for am, m in unir(
+                filas_dos(cur, sel % where, sel % where_p, params), (0,), (1,))
+            if am is not None
         ]
+        por_mes.sort(key=lambda x: x["mes"])
 
-        cur.execute(f"SELECT c.Vendedor, {_IMPORTE} AS Importe "
-                    f"{where} GROUP BY c.Vendedor ORDER BY 2", params)
+        sel = f"SELECT c.Vendedor, {_IMPORTE} AS Importe %s GROUP BY c.Vendedor"
         por_vendedor = [
             {"codigo": int(v), "monto": round(float(_safe(m) or 0), 2)}
-            for v, m in cur.fetchall() if v is not None
+            for v, m in unir(
+                filas_dos(cur, sel % where, sel % where_p, params), (0,), (1,))
+            if v is not None
         ]
+        por_vendedor.sort(key=lambda x: x["monto"])
     finally:
         cur.close()
         conn.close()
@@ -200,6 +228,7 @@ def fetch_bonificaciones(desde: str | None = None, hasta: str | None = None,
         "desde": _ym(desde_ym),
         "hasta": _ym(hasta_ym),
         "comprobantes": list(COMPROBANTES_AJUSTE),
+        "comprobantesPrueba": list(COMPROBANTES_AJUSTE_PRUEBA),
         "total": total,
         "renglones": renglones,
         "porComprobante": por_comprobante,
@@ -260,6 +289,8 @@ WHERE cc.EvitaInformesYListados <> 1
   AND vc.FecMovim BETWEEN ? AND ?
 """
 
+_SQL_PARTICIPACION_PRUEBA = _prueba(_SQL_PARTICIPACION)
+
 
 def fetch_bonificacion_bulones(desde: str | None = None, hasta: str | None = None,
                                forzar: bool = False) -> dict:
@@ -288,10 +319,12 @@ def fetch_bonificacion_bulones(desde: str | None = None, hasta: str | None = Non
 
     conn, cur = _conn()
     try:
-        cur.execute(_SQL_PARTICIPACION, (d1, d2))
-        fila = cur.fetchone()
-        venta_total = float(_safe(fila[0]) or 0)
-        venta_bulones = float(_safe(fila[1]) or 0)
+        # El denominador del prorrateo es la venta de la EMPRESA: las dos
+        # sub-empresas, o la participación de bulonería queda inflada.
+        filas = filas_dos(cur, _SQL_PARTICIPACION, _SQL_PARTICIPACION_PRUEBA,
+                          (d1, d2))
+        venta_total = sum(float(_safe(f[0]) or 0) for f in filas)
+        venta_bulones = sum(float(_safe(f[1]) or 0) for f in filas)
     finally:
         cur.close()
         conn.close()
@@ -370,6 +403,9 @@ JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
 LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
 """ + _WHERE_AJUSTE
 
+_SQL_AJUSTE_TODOS_PRUEBA = _prueba(_SQL_AJUSTE_TODOS)
+_SQL_AJUSTE_VENDEDOR_PRUEBA = _prueba(_SQL_AJUSTE_VENDEDOR)
+
 
 def ajuste_ventanas(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
                     dias_total: tuple[int, int],
@@ -393,18 +429,19 @@ def ajuste_ventanas(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
     # Orden de los "?": los dos CASE del SELECT, después el JOIN de cartera
     # (si hay) y al final el WHERE. Mismo criterio que ventas.py.
     if vendedor is not None:
-        sql = _SQL_AJUSTE_VENDEDOR
+        sql, sql_p = _SQL_AJUSTE_VENDEDOR, _SQL_AJUSTE_VENDEDOR_PRUEBA
         params = dias_acum + dias_mes + params_cartera(vendedor) + dias_total
     else:
-        sql = _SQL_AJUSTE_TODOS
+        sql, sql_p = _SQL_AJUSTE_TODOS, _SQL_AJUSTE_TODOS_PRUEBA
         params = dias_acum + dias_mes + dias_total
 
     conn, cur = _conn()
     try:
-        cur.execute(sql, params)
-        fila = cur.fetchone()
-        acum = round(float(_safe(fila[0]) or 0), 2)
-        mes = round(float(_safe(fila[1]) or 0), 2)
+        # Una fila por sub-empresa, se suman: el ajuste del pie tiene que ser
+        # el de la empresa entera.
+        filas = filas_dos(cur, sql, sql_p, params)
+        acum = round(sum(float(_safe(f[0]) or 0) for f in filas), 2)
+        mes = round(sum(float(_safe(f[1]) or 0) for f in filas), 2)
     finally:
         cur.close()
         conn.close()

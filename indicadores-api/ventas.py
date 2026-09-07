@@ -25,6 +25,7 @@ import time
 from db import get_connection
 from clientes import fetch_cliente
 from cartera import SQL_JOIN_CARTERA, params_cartera, cliente_es_de_vendedor
+from subempresas import filas_dos, sql_prueba, unir
 
 BASE_DATE = date(1800, 12, 28)  # Magnus guarda fechas como días desde esta base
 
@@ -214,6 +215,25 @@ def _solo_venta(sql: str) -> str:
     cualquier .format()), así el filtro vive en un solo lugar."""
     return sql.replace(_WHERE_LEGACY, _WHERE_VENTA)
 
+
+# ──────────────────────────────────────────────────────────────────────────
+# LA OTRA SUB-EMPRESA (2026-09-07)
+# ──────────────────────────────────────────────────────────────────────────
+# La venta de Ever Wear sale de DOS sub-empresas: MAGNUS (`Ven_*`) y PRUEBA
+# (`PRU_Ven_*`). `PRU_` no es una copia de prueba — son comprobantes reales,
+# ≈5% de la facturación, y el cubo del BI los suma. Leyendo sólo `Ven_*` todos
+# los totales de esta vista quedaban por debajo del pivot: ej. BECCARIA
+# GERARDO del 1 al 6/09/2026 daba 20.249.816 en vez de 16.487.281 (PRUEBA le
+# aportaba +3,7M de facturas y −7,5M de notas de crédito).
+#
+# PRUEBA tiene su propio maestro de comprobantes y sus propios códigos: la
+# lista blanca y la transformación viven en subempresas.py. Acá cada constante
+# SQL tiene su gemela `_PRUEBA` y las dos se ejecutan con LOS MISMOS
+# parámetros; las filas se suman en Python.
+def _prueba(sql: str) -> str:
+    """Gemela de una consulta de venta contra la sub-empresa PRUEBA."""
+    return sql_prueba(sql, COMPROBANTES_VENTA, COMPROBANTES_AJUSTE)
+
 # ──────────────────────────────────────────────────────────────────────────
 # Catálogo de líneas: dbo.Stk_Nivel1 (2026-08-20). StkFer_ArtParamet.Nivel1
 # es un INT — el CÓDIGO de la línea, no su nombre. El nombre que muestra el
@@ -252,6 +272,8 @@ LEFT JOIN Stk_Nivel1        n1 ON n1.Nivel1         = ap.Nivel1
 WHERE c.CodCliente = ?
   AND cc.CompCodigo IN (%s)
 """ % ",".join(str(c) for c in COMPROBANTES_VENTA)
+
+SQL_VENTAS_CLIENTE_PRUEBA = _prueba(SQL_VENTAS_CLIENTE)
 
 # Catálogo de vendedores — maestro `Vendedores` (ver cartera.py para por qué
 # este y no `Ped_Usu_Arma`). Alimenta el selector de /admin/usuarios y el
@@ -556,8 +578,6 @@ JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
 WHERE cc.EvitaInformesYListados <> 1
   AND vc.FecMovim BETWEEN ? AND ?
 GROUP BY c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre))
-HAVING SUM({_MONTO_NETO}) > 0
-ORDER BY MontoNeto DESC, MontoMes DESC
 """)
 
 SQL_TOP_CLIENTES_TODOS = _solo_venta(f"""
@@ -573,9 +593,15 @@ JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
 WHERE cc.EvitaInformesYListados <> 1
   AND vc.FecMovim BETWEEN ? AND ?
 GROUP BY c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre))
-HAVING SUM({_MONTO_NETO}) > 0
-ORDER BY MontoNeto DESC, MontoMes DESC
 """)
+
+# El `HAVING SUM(...) > 0` y el `ORDER BY` que tenían estas dos consultas se
+# fueron a Python (fetch_top_clientes): con dos sub-empresas el corte hay que
+# hacerlo sobre la SUMA de las dos — un cliente puede quedar negativo en una y
+# positivo en el total — y ningún ORDER BY de una consulta sola sirve para el
+# ranking final.
+SQL_TOP_CLIENTES_VENDEDOR_PRUEBA = _prueba(SQL_TOP_CLIENTES_VENDEDOR)
+SQL_TOP_CLIENTES_TODOS_PRUEBA = _prueba(SQL_TOP_CLIENTES_TODOS)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -666,25 +692,35 @@ def fetch_top_clientes(
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
         if vendedor is None:
-            cur.execute(SQL_TOP_CLIENTES_TODOS, params_ventanas + dias_total)
+            sql_m, sql_p = SQL_TOP_CLIENTES_TODOS, SQL_TOP_CLIENTES_TODOS_PRUEBA
+            params = params_ventanas + dias_total
         else:
-            cur.execute(
-                SQL_TOP_CLIENTES_VENDEDOR,
-                params_ventanas + params_cartera(vendedor) + dias_total,
-            )
+            sql_m, sql_p = SQL_TOP_CLIENTES_VENDEDOR, SQL_TOP_CLIENTES_VENDEDOR_PRUEBA
+            params = params_ventanas + params_cartera(vendedor) + dias_total
+
+        # Las dos sub-empresas se suman por CodCliente (col. 0) antes de
+        # filtrar y ordenar — ver el bloque de subempresas arriba.
+        filas = unir(filas_dos(cur, sql_m, sql_p, params), (0,), (2, 3))
 
         clientes: list[dict] = []
-        for cod, nombre, monto, monto_mes in cur.fetchall():
+        for cod, nombre, monto, monto_mes in filas:
             if cod is None:
+                continue
+            m = round(float(_safe(monto) or 0), 2)
+            m_mes = round(float(_safe(monto_mes) or 0), 2)
+            # Equivalente al HAVING que estaba en el SQL: la venta del rango
+            # completo (acumulado + mes en curso) tiene que ser positiva.
+            if m + m_mes <= 0:
                 continue
             clientes.append(
                 {
                     "numero": int(cod),
                     "nombre": (str(nombre).strip() if nombre else None),
-                    "monto": round(float(_safe(monto) or 0), 2),
-                    "montoMes": round(float(_safe(monto_mes) or 0), 2),
+                    "monto": m,
+                    "montoMes": m_mes,
                 }
             )
+        clientes.sort(key=lambda c: (c["monto"], c["montoMes"]), reverse=True)
 
         resultado = {
             # En enero no hay acumulado (ningún mes cerrado del año todavía)
@@ -753,6 +789,9 @@ WHERE cc.EvitaInformesYListados <> 1
 GROUP BY LTRIM(RTRIM(n1.Detalle))
 """)
 
+SQL_TOP_LINEAS_VENDEDOR_PRUEBA = _prueba(SQL_TOP_LINEAS_VENDEDOR)
+SQL_TOP_LINEAS_TODOS_PRUEBA = _prueba(SQL_TOP_LINEAS_TODOS)
+
 
 def fetch_top_lineas(
     vendedor: int | None = None,
@@ -796,17 +835,19 @@ def fetch_top_lineas(
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
         if vendedor is None:
-            cur.execute(SQL_TOP_LINEAS_TODOS, params_ventanas + dias_total)
+            sql_m, sql_p = SQL_TOP_LINEAS_TODOS, SQL_TOP_LINEAS_TODOS_PRUEBA
+            params = params_ventanas + dias_total
         else:
-            cur.execute(
-                SQL_TOP_LINEAS_VENDEDOR,
-                params_ventanas + params_cartera(vendedor) + dias_total,
-            )
+            sql_m, sql_p = SQL_TOP_LINEAS_VENDEDOR, SQL_TOP_LINEAS_VENDEDOR_PRUEBA
+            params = params_ventanas + params_cartera(vendedor) + dias_total
 
         # NULL y '' son grupos distintos para SQL pero la misma "sin línea"
-        # acá, así que se consolidan antes de filtrar/ordenar.
+        # acá, así que se consolidan antes de filtrar/ordenar. Las filas de las
+        # DOS sub-empresas caen en el mismo acumulador: la línea ya es la clave.
         acumulado: dict[str, list[float]] = {}
-        for linea, unidades, unidades_mes, monto, monto_mes in cur.fetchall():
+        for linea, unidades, unidades_mes, monto, monto_mes in filas_dos(
+            cur, sql_m, sql_p, params
+        ):
             nombre = _nombre_linea(str(linea or ""))
             acc = acumulado.setdefault(nombre, [0.0, 0.0, 0.0, 0.0])
             acc[0] += float(_safe(unidades) or 0)
@@ -1123,13 +1164,17 @@ def fetch_clientes_por_linea(
             if vendedor is not None:
                 params += params_cartera(vendedor)
             params += (dia_desde - m, dia_hasta + m, dia_desde, dia_hasta)
-        cur.execute(SQL_CLIENTES_LINEA_WRAP.format(sub=sub), params)
+        # La gemela de PRUEBA se arma sobre la subconsulta YA formateada: la
+        # transformación es textual y ni el CASE de año/mes ni la condición de
+        # línea tocan tablas `Ven_*`. Mismos parámetros para las dos.
+        sql_m = SQL_CLIENTES_LINEA_WRAP.format(sub=sub)
+        sql_p = SQL_CLIENTES_LINEA_WRAP.format(sub=_prueba(sub))
 
         clientes: dict[int, dict] = {}
         tot_anterior = _anio_vacio()
         tot_actual = _anio_vacio()
 
-        for cod, nombre, anio_mes, cant, monto in cur.fetchall():
+        for cod, nombre, anio_mes, cant, monto in filas_dos(cur, sql_m, sql_p, params):
             if cod is None or anio_mes is None:
                 continue
             anio, mes = divmod(int(anio_mes), 100)
@@ -1216,9 +1261,13 @@ def fetch_ventas_por_linea(cod_cliente: int, vendedor: int | None = None) -> dic
     try:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
+        # Las dos sub-empresas: mismas columnas, mismo parámetro. Se
+        # concatenan las filas y el acumulador de abajo las suma por línea.
         cur.execute(SQL_VENTAS_CLIENTE, (int(cod_cliente),))
         cols = [c[0] for c in cur.description]
-        filas = cur.fetchall()
+        filas = list(cur.fetchall())
+        cur.execute(SQL_VENTAS_CLIENTE_PRUEBA, (int(cod_cliente),))
+        filas += list(cur.fetchall())
 
         lineas: dict[str, dict] = {}
         tot_anterior = _anio_vacio()

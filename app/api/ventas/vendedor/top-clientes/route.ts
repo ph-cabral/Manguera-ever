@@ -66,6 +66,16 @@ export async function GET(req: NextRequest) {
       );
     }
     const data = await res.json();
+    // Bonificaciones y ajustes: SOLO ADMIN (2026-09-07). El pie
+    // "venta bruta → bonificaciones y ajustes → venta neta" es información de
+    // dirección, así que a un no-admin no le viaja el número: sin
+    // `ajuste`/`ajusteMes` el front arma el pie de una sola fila ("Total"),
+    // que es el comportamiento de siempre. Se filtra acá, no en el front,
+    // para que el dato no esté en la respuesta.
+    if (!acceso.isAdmin) {
+      delete (data as Record<string, unknown>).ajuste;
+      delete (data as Record<string, unknown>).ajusteMes;
+    }
     return NextResponse.json(data);
   } catch (error) {
     console.error("GET /api/ventas/vendedor/top-clientes", error);

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { resolverAccesoBulones } from "@/lib/ventas/bulonesAcceso";
+import { getSession } from "@/lib/auth/session";
 
 const API_URL =
   process.env.INDICADORES_API_URL ?? "http://indicadores-api:8001";
@@ -15,18 +15,25 @@ export const maxDuration = 60;
 // es de TODA la empresa. Acotarlo a una cartera daría un prorrateo calculado
 // sobre una venta parcial, que no significa nada. Ver bonificaciones.py.
 //
-// El acceso igual se resuelve: quien no puede ver la vista tampoco ve esto, y
-// un no-admin sin vendedor asignado recibe el mismo vacío que en los rankings.
+// SOLO ADMIN (2026-09-07): la tarjeta de bonificación es el
+// número de toda la empresa (más el prorrateo a bulonería), información de
+// dirección. Se corta por `rol === "ADMIN"` de la sesión, no por
+// resolverAccesoBulones(): la bandera `bulonesAccesoTotal` abre los DATOS de
+// bulonería a un no-admin, no este indicador. Cualquier otro usuario recibe el
+// payload en cero y el front no dibuja la tarjeta (`bonificacionEmpresa !== 0`),
+// así que el importe nunca sale del server.
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const desde = sp.get("desde")?.trim() || undefined;
   const hasta = sp.get("hasta")?.trim() || undefined;
 
-  const acceso = await resolverAccesoBulones();
-  if (!acceso.ok) {
-    return NextResponse.json({ error: acceso.error }, { status: acceso.status });
+  // Sesión de la cookie: sin consulta a Postgres. Un no-admin sale por el
+  // vacío de abajo antes de tocar la base o el indicadores-api.
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: "No autenticado" }, { status: 401 });
   }
-  if (!acceso.isAdmin && !acceso.vendedorCodigo) {
+  if (session.rol !== "ADMIN") {
     return NextResponse.json({
       desde: desde ?? null,
       hasta: hasta ?? null,

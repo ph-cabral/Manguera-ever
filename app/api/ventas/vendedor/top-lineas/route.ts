@@ -72,6 +72,13 @@ export async function GET(req: NextRequest) {
       );
     }
     const data = await res.json();
+    // Bonificaciones y ajustes: SOLO ADMIN (2026-09-07). Mismo criterio que
+    // /api/ventas/vendedor/top-clientes: sin `ajuste`/`ajusteMes` el pie de
+    // la tabla vuelve a ser una sola fila ("Total") y el número no viaja.
+    if (!acceso.isAdmin) {
+      delete (data as Record<string, unknown>).ajuste;
+      delete (data as Record<string, unknown>).ajusteMes;
+    }
     return NextResponse.json(data);
   } catch (error) {
     console.error("GET /api/ventas/vendedor/top-lineas", error);

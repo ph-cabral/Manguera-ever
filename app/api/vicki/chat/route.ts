@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { resolverAccesoVickiRrhh } from "@/lib/rrhh/vickiRrhhAcceso";
 import { resolverAccesoVickiVentas } from "@/lib/ventas/vickiVentasAcceso";
+import { resolverAccesoVickiCompras } from "@/lib/compras/vickiComprasAcceso";
 
 export const dynamic = "force-dynamic";
 
@@ -18,9 +19,10 @@ export async function POST(req: NextRequest) {
     // persona. Ver lib/ventas/vickiVentasAcceso.ts.
     // Los dos permisos se resuelven en paralelo: son dos lookups distintos
     // sobre la misma sesión y esto corre en CADA mensaje del chat.
-    const [acceso, accesoRrhh] = await Promise.all([
+    const [acceso, accesoRrhh, accesoCompras] = await Promise.all([
       resolverAccesoVickiVentas(),
       resolverAccesoVickiRrhh(),
+      resolverAccesoVickiCompras(),
     ]);
     if (!acceso.ok) {
       return NextResponse.json({ error: acceso.error }, { status: acceso.status });
@@ -31,6 +33,9 @@ export async function POST(req: NextRequest) {
     // Asistencia (intent "rrhh"): todo o nada, sin filtro por persona — ver
     // lib/rrhh/vickiRrhhAcceso.ts.
     body.vicki_rrhh_habilitado = accesoRrhh.ok && accesoRrhh.habilitado;
+    // Compras (intent "compras"): el permiso ES el de la vista /compras, leído
+    // de la cookie de sesión — ver lib/compras/vickiComprasAcceso.ts.
+    body.vicki_compras_habilitado = accesoCompras.ok && accesoCompras.habilitado;
 
     const r = await fetch(`${VICKI_URL}/chat`, {
       method: "POST",

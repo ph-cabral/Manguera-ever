@@ -747,11 +747,14 @@ def fetch_top_clientes(
             a_acum, a_mes = ajustes.pop(int(cod), (0.0, 0.0))
             m = round(bruto + a_acum, 2)
             m_mes = round(bruto_mes + a_mes, 2)
-            # Equivalente al HAVING que estaba en el SQL: se descarta el
-            # cliente sin actividad real — venta con artículo no positiva Y
-            # sin ninguna nota de crédito. Con ajuste el neto puede quedar
-            # negativo y la fila SÍ tiene que verse: es plata del período.
-            if bruto + bruto_mes <= 0 and not (a_acum or a_mes):
+            # Equivalente al HAVING que estaba en el SQL, pero SOLO descarta
+            # al cliente SIN MOVIMIENTO en el período (todo en cero). Un
+            # bruto NEGATIVO — devolución (comp. 22) sin factura en el rango —
+            # es plata real del período y tiene que entrar: descartarlo dejaba
+            # esa resta afuera y el total del pie quedaba por ENCIMA del
+            # pivot (2026-09-08: BECCARIA GERARDO, ene→ago, +43.251,70 por el
+            # cliente 15740).
+            if not (bruto or bruto_mes or a_acum or a_mes):
                 continue
             clientes.append(
                 {

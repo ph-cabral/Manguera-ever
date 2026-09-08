@@ -11,6 +11,7 @@ import {
   Trophy,
   ArrowLeft,
   X,
+  Info,
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
@@ -1942,8 +1943,27 @@ export default function VentasVendedorPage() {
                                 pueden discrepar: neto cuando hay
                                 bonificaciones que restar, bruto cuando no —
                                 y el mes queda de subtítulo. */}
-                            <span className="tabular-nums">
-                              {fmtTop(topSumas.mes + (topAjuste?.mes ?? 0))}
+                            {/* Ícono de info (2026-09-08): el mes en curso
+                                sale de datos parciales/ajustados, así que se
+                                avisa en el hover que el número es estimativo. */}
+                            <span className="inline-flex items-center justify-end gap-1">
+                              <span className="tabular-nums">
+                                {fmtTop(topSumas.mes + (topAjuste?.mes ?? 0))}
+                              </span>
+                              <span
+                                className="group relative inline-flex cursor-help align-middle"
+                                tabIndex={0}
+                                title="Estos valores son estimativos"
+                                aria-label="Estos valores son estimativos"
+                              >
+                                <Info
+                                  size={13}
+                                  className="text-zinc-500 hover:text-zinc-300 transition-colors"
+                                />
+                                <span className="pointer-events-none absolute right-0 top-full z-30 mt-1 hidden whitespace-nowrap rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] font-normal text-zinc-200 shadow-lg group-hover:block group-focus:block">
+                                  Estos valores son estimativos
+                                </span>
+                              </span>
                             </span>
                             <span className="block text-[11px] font-normal text-zinc-500">
                               {mesActualLabel}

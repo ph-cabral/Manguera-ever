@@ -417,6 +417,23 @@ export default function ComprasMetricasPage() {
     (key: string) => funnel?.columnas.find((c) => c.key === key)?.importe ?? 0,
     [funnel],
   );
+  // Mismo funnel pero SIN recorte por origen (nacionales + importados + fábrica
+  // + original + otros): alimenta la fila de cards "total del mes". Ya viene
+  // calculado en la respuesta, no cuesta ninguna consulta.
+  const funnelTodos = useMemo(() => data?.funnels?.todos, [data]);
+  const colT = useCallback(
+    (key: string) => funnelTodos?.columnas.find((c) => c.key === key)?.total ?? 0,
+    [funnelTodos],
+  );
+  const unidT = useCallback(
+    (key: string) => funnelTodos?.columnas.find((c) => c.key === key)?.unidades ?? 0,
+    [funnelTodos],
+  );
+  const impT = useCallback(
+    (key: string) => funnelTodos?.columnas.find((c) => c.key === key)?.importe ?? 0,
+    [funnelTodos],
+  );
+
   // $ del FALTANTE de los artículos de la etapa (cuánto de lo que faltó cayó
   // ahí), distinto del $ de lo pedido o ingresado.
   const impFalt = useCallback(
@@ -648,6 +665,37 @@ export default function ComprasMetricasPage() {
         )}
 
 
+        {/* Total del mes SIN separar por origen (todos los tipos de artículo).
+            Mismo funnel, clave "todos": no dispara ninguna consulta extra. */}
+        <div>
+          <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-500 mb-2">
+            <Globe size={12} /> Total del mes · todos los orígenes
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <KpiCard
+              label="Faltantes del mes (total)"
+              value={<StackedKpi items={`${fmtNum(colT("faltantes"))} items`} unidades={`${fmtNum(unidT("faltantes"))} u.`} importe={fmtMoney(impT("faltantes"))} />}
+              hint="Todos los orígenes juntos (nacionales, importados, fábrica, original y otros): artículos con unidades pendientes en el mes, sus unidades y cuánto faltó en $ (a precio de venta)"
+              icon={PackageX}
+              accent="zinc"
+            />
+            <KpiCard
+              label="Con OC ese mes (total)"
+              value={<StackedKpi items={`${fmtNum(colT("conOC"))} items`} unidades={`${fmtNum(unidT("conOC"))} u.`} importe={fmtMoney(impT("conOC"))} />}
+              hint="De esos faltantes, con Orden de Compra hecha en el mes — unidades pedidas en esas OC y su $, sin separar por origen"
+              icon={ShoppingCart}
+              accent="zinc"
+            />
+            <KpiCard
+              label="Ingresados ese mes (total)"
+              value={<StackedKpi items={`${fmtNum(colT("ingresados"))} items`} unidades={`${fmtNum(unidT("ingresados"))} u.`} importe={fmtMoney(impT("ingresados"))} />}
+              hint="De esos, ya recibidos en depósito — unidades ingresadas por remito y su $, sin separar por origen"
+              icon={PackageCheck}
+              accent="zinc"
+            />
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <KpiCard
             label="Faltantes del mes"
@@ -658,7 +706,7 @@ export default function ComprasMetricasPage() {
           />
           <KpiCard
             label="Con OC ese mes"
-            value={<StackedKpi items={`${fmtNum(col("conOC"))} de ${fmtNum(data?.ocTotalItems ?? 0)} items`} unidades={`${fmtNum(unid("conOC"))} u.`} importe={fmtMoney(imp("conOC"))} />}
+            value={<StackedKpi items={`${fmtNum(col("conOC"))} items`} unidades={`${fmtNum(unid("conOC"))} u.`} importe={fmtMoney(imp("conOC"))} />}
             hint={`De los faltantes, con Orden de Compra — unidades pedidas en esas OC y su $. El total son los ${fmtNum(data?.ocTotalItems ?? 0)} items (${fmtNum(data?.ocTotalUnidades ?? 0)} u.) con OC ese mes, faltantes o no`}
             icon={ShoppingCart}
             accent="blue"

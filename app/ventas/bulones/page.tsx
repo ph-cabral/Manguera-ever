@@ -185,25 +185,6 @@ interface RespTopVendedores {
   porMonto: TopVendedor[];
 }
 
-// Bonificaciones y ajustes: notas de crédito/débito por CONCEPTO
-// (comprobantes 24 bonificación, 60 bonificación fuera de recibo, 25 crédito
-// interno, 23 fiscal y 62 ajuste de saldos). No tienen artículo, así que no
-// tienen línea — el importe es de TODA la empresa. `montoBulones` es la parte
-// que le toca a la línea prorrateada por `participacion` (su peso en la venta
-// con artículo del mismo rango, ~0,32%). Ver bonificaciones.py.
-interface RespBonificacion {
-  desde: string;
-  hasta: string;
-  bonificacionEmpresa: number;
-  ventaTotal: number;
-  ventaBulones: number;
-  participacion: number;
-  montoBulones: number;
-  porComprobante: { comprobante: number; detalle: string; monto: number }[];
-  porConcepto: { concepto: number; detalle: string; monto: number }[];
-  porMes: { mes: string; monto: number }[];
-}
-
 // Las tres pestañas del ranking del pie. "vendedores" es la nueva (va a la
 // DERECHA de las otras dos).
 type TopVista = "clientes" | "patrones" | "vendedores";
@@ -489,31 +470,9 @@ export default function VentasBulonesPage() {
     };
   }, []);
 
-  // ── Bonificación de la empresa ──────────────────────────────────────────
-  // Va APARTE, en su propia tarjeta, y NO se descuenta de los rankings: es un
-  // número de empresa y no se puede repartir honestamente entre clientes,
-  // patrones y vendedores. Falla en silencio (la vista sigue sirviendo sin
-  // esto) — por eso no toca `topError`.
-  const [bonif, setBonif] = useState<RespBonificacion | null>(null);
-
-  useEffect(() => {
-    let cancelado = false;
-    fetch("/api/ventas/bulones/bonificacion", { cache: "no-store" })
-      .then(async (res) => {
-        const j = await res.json().catch(() => null);
-        if (!res.ok || !j || j.error) return null;
-        return j as RespBonificacion;
-      })
-      .then((j) => {
-        if (!cancelado && j) setBonif(j);
-      })
-      .catch(() => {
-        /* silencioso a propósito: la bonificación es un extra de la vista */
-      });
-    return () => {
-      cancelado = true;
-    };
-  }, []);
+  // La tarjeta de bonificación prorrateada se sacó de la vista. El cálculo
+  // sigue vivo en /api/ventas/bulones/bonificacion + bonificaciones.py por si
+  // se lo quiere volver a mostrar; acá ya no se pide (una query menos).
 
   // ── Período YTD / Meses ─────────────────────────────────────────────────
   // "YTD" = Enero..mes ANTERIOR (el mes en curso queda afuera por estar
@@ -1373,48 +1332,6 @@ export default function VentasBulonesPage() {
                 )}
               </div>
             </div>
-          </div>
-        )}
-
-        {/* Bonificación — tarjeta aparte, NO se descuenta de los rankings.
-            Son notas de crédito por concepto: no tienen artículo y por lo
-            tanto no tienen línea, así que el importe es de toda la empresa y
-            a bulonería le toca la parte proporcional a su peso en la venta.
-            Se muestran los dos números para que se entienda de dónde sale el
-            prorrateo. Ver bonificaciones.py. */}
-        {bonif && bonif.bonificacionEmpresa !== 0 && (
-          <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 px-5 py-4">
-            <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
-              <div>
-                <p className="text-xs uppercase tracking-wide text-zinc-500">
-                  Bonificación estimada de bulonería
-                </p>
-                <p className="text-2xl font-semibold text-amber-300 tabular-nums">
-                  {fmtMoney(bonif.montoBulones)}
-                </p>
-              </div>
-              <div className="text-right">
-                <p className="text-xs uppercase tracking-wide text-zinc-500">
-                  Bonificación de la empresa
-                </p>
-                <p className="text-lg font-medium text-zinc-300 tabular-nums">
-                  {fmtMoney(bonif.bonificacionEmpresa)}
-                </p>
-              </div>
-            </div>
-            <p className="mt-3 text-xs leading-relaxed text-zinc-500">
-              Las bonificaciones y los ajustes de saldo se emiten como notas de
-              crédito por concepto, sin artículo: son de toda la empresa y no
-              se pueden imputar a una línea. Acá se prorratean por la
-              participación de bulonería en la venta
-              ({(bonif.participacion * 100).toFixed(2)}%
-              {" · "}
-              {fmtMoney(bonif.ventaBulones)} sobre {fmtMoney(bonif.ventaTotal)}).
-              <strong className="text-zinc-400">
-                {" "}
-                Los rankings de abajo NO la descuentan.
-              </strong>
-            </p>
           </div>
         )}
 

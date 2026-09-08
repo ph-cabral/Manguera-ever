@@ -12,6 +12,7 @@ import {
   X,
   ListChevronsUpDown,
   UserRound,
+  Info,
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
@@ -219,6 +220,26 @@ function agrupar<T>(items: T[]): T[][] {
     grupos.push(items.slice(i, i + GROUP_SIZE));
   }
   return grupos;
+}
+
+// Ícono de info (2026-09-08) — mismo aviso que en /ventas/vendedor: el año en
+// curso incluye el mes a medio facturar, así que el total es estimativo.
+// Tooltip propio en hover/focus + `title` nativo como respaldo por si el
+// contenedor con overflow lo recorta.
+function IconoEstimativo() {
+  return (
+    <span
+      className="group relative inline-flex cursor-help align-middle"
+      tabIndex={0}
+      title="Estos valores son estimativos"
+      aria-label="Estos valores son estimativos"
+    >
+      <Info size={13} className="text-zinc-500 hover:text-zinc-300 transition-colors" />
+      <span className="pointer-events-none absolute left-1/2 top-full z-30 mt-1 hidden -translate-x-1/2 whitespace-nowrap rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] font-normal text-zinc-200 shadow-lg group-hover:block group-focus:block">
+        Estos valores son estimativos
+      </span>
+    </span>
+  );
 }
 
 function FilaGrupo({
@@ -1057,7 +1078,8 @@ export default function VentasBulonesPage() {
                                   {" "}
                                   ({labelDeMes(fuenteTabla!.totales.anioActual, mesActualNum)})
                                 </span>
-                              )}
+                              )}{" "}
+                              <IconoEstimativo />
                             </th>
                             <th
                               rowSpan={desglosado ? 2 : 1}

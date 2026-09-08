@@ -50,6 +50,13 @@ export const maxDuration = 60;
 //   /deposito/faltantes — Importe/CantPend por renglón, ver deposito.py). No
 //   cuesta ninguna consulta extra.
 //
+//   2026-09-08 — "Con OC" se lee SIEMPRE contra el faltante: sus unidades/$ son
+//   los del FALTANTE de esos artículos, no los de la OC. Antes valorizaba lo
+//   PEDIDO (cantidad de la OC × precio), que incluye lo que se compró de más
+//   sobre el faltante y daba un $ mayor al del faltante del mes — imposible de
+//   leer contra la card de al lado. Lo pedido sigue disponible en
+//   `ocUnidades`/`ocImporte` de esa columna.
+//
 //   Ademas cada columna informa `faltanteUnidades` / `faltanteImporte`: la
 //   magnitud del FALTANTE de los articulos de esa etapa, no lo pedido ni lo
 //   ingresado. Sirve para leer la cobertura en $ del faltante del mes ("de los
@@ -74,10 +81,11 @@ export const maxDuration = 60;
 //   "todos", todo en memoria sobre los mismos 3 sets: el selector de la vista
 //   cambia de origen SIN volver a pegarle a Magnus.
 //
-//   ocTotalItems/ocTotalUnidades: el set B COMPLETO, sin recortar por faltantes
-//   — o sea toda la OC del mes. Es el denominador de la columna 2 ("135 de 701
-//   items"): el recorte del funnel hacía parecer que faltaban OC cuando en
-//   realidad la card solo contaba las de artículos faltantes.
+//   2026-09-08 — se sacó ocTotalItems/ocTotalUnidades (el set B completo, toda
+//   la OC del mes sin recortar). La vista de compras se lee SOLO contra los
+//   artículos que faltaron: mezclar en la card el total de OC — que incluye
+//   artículos que nunca fueron faltante — confundía la lectura. El total de OC
+//   del mes sigue estando en /compras/compras-valorizado.
 //
 //   `origenes` clasifica el mismo universo recortado en las 5 categorías de
 //   origenArticulo (Nacionales / Importados / Fábrica / Original / Otros) y
@@ -142,6 +150,11 @@ interface Columna {
   // responde "de los $X que faltaron, cuanto ya tiene OC / cuanto ya llego".
   faltanteUnidades: number;
   faltanteImporte: number;
+  // Solo la columna "conOC": lo efectivamente PEDIDO en la OC de esos mismos
+  // artículos (puede ser mayor o menor que lo que faltaba). La vista muestra
+  // unidades/importe, que ya vienen capados al faltante.
+  ocUnidades?: number;
+  ocImporte?: number;
 }
 interface Funnel {
   faltantesUnidades: number;
@@ -197,10 +210,16 @@ function armarFunnel(
       },
       {
         key: "conOC",
+        // Unidades/$ = la magnitud del FALTANTE de esos artículos, NO lo pedido
+        // en la OC (ver cabecera): la card responde "de lo que faltó, cuánto ya
+        // tiene OC". Lo pedido queda en `ocUnidades`/`ocImporte` por si alguna
+        // vista lo necesita; la de /compras no lo muestra.
         label: "Con OC",
         total: conOC.length,
-        unidades: sumUnid(conOC, ocUnidMap),
-        importe: sumImporte(conOC, ocUnidMap, precioUnitMap),
+        unidades: fOC.unidades,
+        importe: fOC.importe,
+        ocUnidades: sumUnid(conOC, ocUnidMap),
+        ocImporte: sumImporte(conOC, ocUnidMap, precioUnitMap),
         faltanteUnidades: fOC.unidades,
         faltanteImporte: fOC.importe,
       },
@@ -287,10 +306,6 @@ export async function GET(req: NextRequest) {
     if (a.unidades > 0) precioUnitMap.set(a.cod, a.importe / a.unidades);
   }
 
-  // Denominador de la columna 2: TODA la OC del mes, sin recortar por faltantes.
-  let ocTotalUnidades = 0;
-  for (const u of ocUnidMap.values()) ocTotalUnidades += u;
-
   // 3) Un funnel por origen + los dos agregados. Todo en memoria, sin consultas
   //    extra.
   //    · "compras" = Nacionales + Importados + Otros (las solapas del selector).
@@ -328,8 +343,6 @@ export async function GET(req: NextRequest) {
     // detectada en StkFer_Articulos): NO se filtró por Habilitado.
     estadoArticuloDisponible: faltMes.estadoDisponible,
     unidadesDescartadas: r2(faltMes.unidadesDescartadas),
-    ocTotalItems: setB.size,
-    ocTotalUnidades: r2(ocTotalUnidades),
     // Items del mes que el total "compras" deja afuera a propósito (Fábrica +
     // Original). Se informan para que nada desaparezca en silencio.
     excluidosItems:

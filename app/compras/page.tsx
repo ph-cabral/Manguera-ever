@@ -63,10 +63,6 @@ interface Resp {
   estadoArticuloDisponible: boolean;
   // Unidades descartadas por venir de pedidos cancelados o sin estado.
   unidadesDescartadas: number;
-  // Toda la OC del mes (sin recortar por faltantes) — denominador de la card
-  // "Con OC ese mes", que por el funnel solo cuenta los artículos faltantes.
-  ocTotalItems: number;
-  ocTotalUnidades: number;
   // Items faltantes del mes que el total deja afuera a propósito: Fábrica
   // (producción interna) + Original. No se compran.
   excluidosItems?: number;
@@ -410,7 +406,9 @@ export default function ComprasMetricasPage() {
     (key: string) => funnel?.columnas.find((c) => c.key === key)?.total ?? 0,
     [funnel],
   );
-  // Unidades de la etapa (mismo recorte del funnel que los items).
+  // Unidades de la etapa (mismo recorte del funnel que los items). En "conOC"
+  // son las unidades que FALTABAN de esos artículos, no las pedidas en la OC
+  // (ver /api/compras/metricas): la vista se lee siempre contra el faltante.
   const unid = useCallback(
     (key: string) => funnel?.columnas.find((c) => c.key === key)?.unidades ?? 0,
     [funnel],
@@ -721,7 +719,7 @@ export default function ComprasMetricasPage() {
           <KpiCard
             label="Con OC ese mes"
             value={<StackedKpi items={`${fmtNum(col("conOC"))} items`} unidades={`${fmtNum(unid("conOC"))} u.`} importe={fmtMoney(imp("conOC"))} />}
-            hint={`OC Nacional ${fmtNum(data?.ocTotalItems ?? 0)} items (${fmtNum(data?.ocTotalUnidades ?? 0)} u.) que eran faltantes`}
+            hint="De lo que faltó, lo que ya tiene OC en el mes — valorizado por lo que faltaba"
             icon={ShoppingCart}
             accent="blue"
           />

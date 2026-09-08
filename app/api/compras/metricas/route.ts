@@ -50,12 +50,17 @@ export const maxDuration = 60;
 //   /deposito/faltantes — Importe/CantPend por renglón, ver deposito.py). No
 //   cuesta ninguna consulta extra.
 //
-//   2026-09-08 — "Con OC" se lee SIEMPRE contra el faltante: sus unidades/$ son
-//   los del FALTANTE de esos artículos, no los de la OC. Antes valorizaba lo
-//   PEDIDO (cantidad de la OC × precio), que incluye lo que se compró de más
-//   sobre el faltante y daba un $ mayor al del faltante del mes — imposible de
-//   leer contra la card de al lado. Lo pedido sigue disponible en
-//   `ocUnidades`/`ocImporte` de esa columna.
+//   2026-09-08 — las TRES columnas se leen contra el faltante: unidades/$ son
+//   siempre los del FALTANTE de los artículos de esa etapa, no lo pedido en la
+//   OC ni lo ingresado por remito. Antes "Con OC" valorizaba lo PEDIDO y
+//   "Ingresados" lo INGRESADO, que incluyen lo comprado/recibido de más sobre
+//   el faltante: las tres cards no se podían leer entre sí ni contra el panel
+//   "Cuánto faltó y cuánto se cubrió". Los valores sin capar siguen
+//   disponibles en `ocUnidades`/`ocImporte` e `ingUnidades`/`ingImporte`.
+//
+//   Con esto: faltantes.importe = ingresados.importe + (conOC − ingresados) +
+//   sin cubrir, y conOC.importe = "ya ingresó" + "con OC sin ingresar" del
+//   panel. Los tres números cierran exactos.
 //
 //   Ademas cada columna informa `faltanteUnidades` / `faltanteImporte`: la
 //   magnitud del FALTANTE de los articulos de esa etapa, no lo pedido ni lo
@@ -155,6 +160,10 @@ interface Columna {
   // unidades/importe, que ya vienen capados al faltante.
   ocUnidades?: number;
   ocImporte?: number;
+  // Idem en la columna "ingresados": lo efectivamente INGRESADO por remito de
+  // esos artículos, sin capar al faltante.
+  ingUnidades?: number;
+  ingImporte?: number;
 }
 interface Funnel {
   faltantesUnidades: number;
@@ -225,10 +234,16 @@ function armarFunnel(
       },
       {
         key: "ingresados",
+        // Igual que "conOC": unidades/$ = la magnitud del FALTANTE de esos
+        // artículos, NO lo efectivamente ingresado (un remito puede traer
+        // mucho más que lo que faltaba). Lo ingresado queda en
+        // `ingUnidades`/`ingImporte`.
         label: "Ingresados",
         total: ingresados.length,
-        unidades: sumUnid(ingresados, ingUnidMap),
-        importe: sumImporte(ingresados, ingUnidMap, precioUnitMap),
+        unidades: fIng.unidades,
+        importe: fIng.importe,
+        ingUnidades: sumUnid(ingresados, ingUnidMap),
+        ingImporte: sumImporte(ingresados, ingUnidMap, precioUnitMap),
         faltanteUnidades: fIng.unidades,
         faltanteImporte: fIng.importe,
       },

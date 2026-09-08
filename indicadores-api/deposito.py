@@ -46,11 +46,24 @@ UBIC_COL_CANT = "UbicacionDetalleCantidad"
 
 CODIGOS_COMPROBANTE_WMS = (10, 70, 75, 100, 210, 310)
 
+# [FECHA PEDIDO] = fecha en que se REGISTRO el pedido en Magnus
+# (TMP_TiempoDePedidos.FechaRegistracionPedido, misma fuente que /deposito/ingresados),
+# para poder partir lo preparado en "del dia" vs "arrastre de dias anteriores".
+# El LEFT JOIN es 1-a-1 (NroMovVenta es unico en TMP_TiempoDePedidos, ~10k filas:
+# snapshot de ~90 dias), asi que NO multiplica filas ni cambia los conteos de OT.
+# Si el pedido cae fuera del snapshot (o la OT no es de picking) no hay match y se
+# usa OT.OTFechaHoraRegist como respaldo: coincide con la registracion del pedido en
+# ~72% de los casos y es lo mas cercano disponible en la propia OT.
+
 # /deposito (productividad cruda) -> TODA la actividad WMS, SIN filtrar por
 # comprobante de Magnus (no debe verse afectada por ese filtro).
 SQL_WMS_TODOS = """
 SELECT
     CONVERT(varchar(10), OT.OTFechaHoraEjecucion, 103) AS [FECHA EJECUCION],
+    ISNULL(
+        CONVERT(varchar(10), TRY_CONVERT(date, LTRIM(RTRIM(t.FechaRegistracionPedido)), 103), 103),
+        CONVERT(varchar(10), OT.OTFechaHoraRegist, 103)
+    )                                AS [FECHA PEDIDO],
     CASE Codot.CodotProcesoNegocio
         WHEN 1 THEN 'Reposicion'
         WHEN 2 THEN 'Interdeposito'
@@ -70,6 +83,7 @@ LEFT JOIN (
         SUM(CASE WHEN OTItemTipo = 1 AND OTItemCantCumplida > 0 THEN 1 ELSE 0 END) AS [CANT. ITEM RECOLECTADOS]
     FROM OTItem GROUP BY OTId
 ) i ON OT.OTId = i.OTId
+LEFT JOIN EVERWEAR.dbo.TMP_TiempoDePedidos t ON t.NroMovVenta = OT.{col_pedido}
 WHERE OT.OTEstado IN (2, 3, 4)
   AND OT.OTFechaHoraEjecucion >= ?
   AND OT.OTFechaHoraEjecucion <= ?
@@ -81,6 +95,10 @@ ORDER BY OT.OTId DESC
 SQL_WMS_PEDIDOS = """
 SELECT
     CONVERT(varchar(10), OT.OTFechaHoraEjecucion, 103) AS [FECHA EJECUCION],
+    ISNULL(
+        CONVERT(varchar(10), TRY_CONVERT(date, LTRIM(RTRIM(t.FechaRegistracionPedido)), 103), 103),
+        CONVERT(varchar(10), OT.OTFechaHoraRegist, 103)
+    )                                AS [FECHA PEDIDO],
     CASE Codot.CodotProcesoNegocio
         WHEN 1 THEN 'Reposicion'
         WHEN 2 THEN 'Interdeposito'
@@ -118,7 +136,7 @@ def fetch_wms(desde: datetime, hasta: datetime, todos: bool = False):
         cur = conn.cursor()
         cur.execute("SET DATEFORMAT ymd; SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
         if todos:
-            cur.execute(SQL_WMS_TODOS, (desde, hasta))
+            cur.execute(SQL_WMS_TODOS.format(col_pedido=OT_COL_PEDIDO), (desde, hasta))
         else:
             cur.execute(
                 SQL_WMS_PEDIDOS.format(

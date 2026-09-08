@@ -22,6 +22,10 @@ import { esFilaProductiva } from "@/lib/deposito/parseDeposito";
 //   Preparado (OT) = filas de Picking de /api/deposito/wms con todos=true
 //                    (MISMA consulta y MISMO recorte que /deposito -> los items
 //                    y el ranking cierran con el tab Picking de esa vista)
+//                    La barra va APILADA en dos tramos segun [FECHA PEDIDO]
+//                    (registracion del pedido en Magnus): "del periodo" = el pedido
+//                    ingreso en el mismo bucket en que se preparo; "de dias
+//                    anteriores" = arrastre. El total de la barra no cambia.
 //   Ingresados     = pedidos registrados/día de /api/deposito/ingresados
 //                    (comprobantes 10/70/100/210/310 con factura + 75 y 410, que
 //                    por circuito nunca se facturan pero sí generan OT)
@@ -31,7 +35,7 @@ import { esFilaProductiva } from "@/lib/deposito/parseDeposito";
 // ──────────────────────────────────────────────────────────────────────────────
 
 type Row = Record<string, unknown>;
-interface Rec { d: Date; op: string; items: number }
+interface Rec { d: Date; dp: Date | null; op: string; items: number }
 interface IngRec { d: Date; pedidos: number }
 type Gran = "dia" | "sem" | "mes";
 type Vista = "comp" | "ind" | "mat";
@@ -64,15 +68,19 @@ function bucketOf(d: Date, g: Gran): { key: string; sort: string; label: string 
   return { key: k, sort: k, label: `Sem ${iw.week} · ${fmtDM(mondayOf(d))}` };
 }
 
-function parseRow(r: Row): Rec | null {
-  const raw = String(r["FECHA EJECUCION"] ?? "").trim().split(" ")[0];
-  const m = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(raw);
+const parseDMY = (v: unknown): Date | null => {
+  const m = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(String(v ?? "").trim().split(" ")[0]);
   if (!m) return null;
   const d = new Date(+m[3], +m[2] - 1, +m[1]);
-  if (isNaN(d.getTime())) return null;
+  return isNaN(d.getTime()) ? null : d;
+};
+
+function parseRow(r: Row): Rec | null {
+  const d = parseDMY(r["FECHA EJECUCION"]);
+  if (!d) return null;
   const op = String(r["OPERARIO"] ?? "").trim() || "(sin operario)";
   const items = parseInt(String(r["CANT. ITEM RECOLECTADOS"] ?? "0").replace(/[^0-9]/g, ""), 10) || 0;
-  return { d, op, items };
+  return { d, dp: parseDMY(r["FECHA PEDIDO"]), op, items };
 }
 function parseIng(r: Row): IngRec | null {
   const m = /(\d{4})-(\d{2})-(\d{2})/.exec(String(r["fecha"] ?? ""));
@@ -82,10 +90,13 @@ function parseIng(r: Row): IngRec | null {
   return { d, pedidos: Number(r["pedidos"]) || 0 };
 }
 
+// Tramo de la barra verde que corresponde a pedidos ingresados en periodos anteriores.
+const PREP_PREV = "#1c5c2c";
+
 const tooltipStyle = { background: "#0d0d0d", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 12, color: C.text } as const;
 
 // ─── Combinado: barras (Ingresados/Preparado/Controlado) + línea % Eficiencia ──
-interface ComboRow { lbl: string; ing: number; prep: number; ctrl: number; ef: number }
+interface ComboRow { lbl: string; ing: number; prep: number; prepDia: number; prepPrev: number; ctrl: number; ef: number }
 function ComboChart({ data, hasCtrl, maxEf, angle }: { data: ComboRow[]; hasCtrl: boolean; maxEf: number; angle: number }) {
   if (!data.length) return <div className="h-[340px] flex items-center justify-center text-zinc-700 text-xs">Sin datos</div>;
   return (
@@ -105,7 +116,10 @@ function ComboChart({ data, hasCtrl, maxEf, angle }: { data: ComboRow[]; hasCtrl
         <Bar yAxisId="left" dataKey="ing" name="Pedidos Ingresados" fill="#d4d4d8" radius={[3, 3, 0, 0]} maxBarSize={46}>
           <LabelList dataKey="ing" position="top" fontSize={10} fill={C.muted} formatter={(v: number) => fmtNum(v)} />
         </Bar>
-        <Bar yAxisId="left" dataKey="prep" name="Preparado (OT)" fill={C.green} radius={[3, 3, 0, 0]} maxBarSize={46}>
+        <Bar yAxisId="left" stackId="prep" dataKey="prepDia" name="Preparado (OT) · del período"
+          fill={C.green} maxBarSize={46} />
+        <Bar yAxisId="left" stackId="prep" dataKey="prepPrev" name="Preparado (OT) · ingresado antes"
+          fill={PREP_PREV} radius={[3, 3, 0, 0]} maxBarSize={46}>
           <LabelList dataKey="prep" position="top" fontSize={10} fill={C.green} formatter={(v: number) => fmtNum(v)} />
         </Bar>
         {hasCtrl && (
@@ -283,15 +297,24 @@ export default function PedidosPreparadosPage() {
 
   // Combinado Ingresados vs Preparado (+ Controlado a futuro) por bucket
   const combo = useMemo<ComboRow[]>(() => {
-    const map = new Map<string, { label: string; sort: string; ing: number; prep: number; ctrl: number }>();
+    const map = new Map<string, { label: string; sort: string; ing: number; prep: number; prepDia: number; prepPrev: number; ctrl: number }>();
     const get = (k: string, label: string, sort: string) => {
-      let o = map.get(k); if (!o) { o = { label, sort, ing: 0, prep: 0, ctrl: 0 }; map.set(k, o); } return o;
+      let o = map.get(k);
+      if (!o) { o = { label, sort, ing: 0, prep: 0, prepDia: 0, prepPrev: 0, ctrl: 0 }; map.set(k, o); }
+      return o;
     };
-    for (const r of recs) { const b = bucketOf(r.d, gran); get(b.key, b.label, b.sort).prep++; }
+    for (const r of recs) {
+      const b = bucketOf(r.d, gran);
+      const o = get(b.key, b.label, b.sort);
+      o.prep++;
+      // "del período" = el pedido se registró en el MISMO bucket en que se preparó.
+      // Sin fecha de pedido (OT fuera del snapshot) cuenta como arrastre.
+      if (r.dp && bucketOf(r.dp, gran).key === b.key) o.prepDia++; else o.prepPrev++;
+    }
     for (const r of ingRecs) { const b = bucketOf(r.d, gran); get(b.key, b.label, b.sort).ing += r.pedidos; }
     // TODO Controlado: cuando haya fuente (pedidos controlados/día), sumar get(...).ctrl
     return [...map.values()].sort((a, b) => a.sort.localeCompare(b.sort)).map((o) => ({
-      lbl: o.label, ing: o.ing, prep: o.prep, ctrl: o.ctrl,
+      lbl: o.label, ing: o.ing, prep: o.prep, prepDia: o.prepDia, prepPrev: o.prepPrev, ctrl: o.ctrl,
       ef: o.ing > 0 ? Math.round((o.prep / o.ing) * 1000) / 10 : 0,
     }));
   }, [recs, ingRecs, gran]);
@@ -502,6 +525,7 @@ export default function PedidosPreparadosPage() {
         )}
 
         <p className="text-[11px] text-zinc-600 mt-6 leading-relaxed">
+          La barra verde va apilada: tramo claro = pedidos ingresados en el mismo período; tramo oscuro = arrastre de períodos anteriores.
           Preparado (OT) = WMS Picking (1 fila = 1 OT). Ingresados = pedidos registrados/día (Magnus, comprobantes 10, 70, 75, 100,
           210, 310 y 410 — los 75 y 410 no se facturan, por eso no se les exige factura). Controlado: 3ª barra lista para cuando se
           defina la fuente. Semanas lunes→domingo (ISO). SQL en vivo.

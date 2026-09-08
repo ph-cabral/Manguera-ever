@@ -701,7 +701,7 @@ export default function ComprasMetricasPage() {
             <KpiCard
               label="Ingresados ese mes (total)"
               value={<StackedKpi items={`${fmtNum(colT("ingresados"))} items`} unidades={`${fmtNum(unidT("ingresados"))} u.`} importe={fmtMoney(impT("ingresados"))} />}
-              hint="Ingresados en el mes"
+              hint="De lo que faltó, lo que ya ingresó en el mes"
               icon={PackageCheck}
               accent="zinc"
             />
@@ -726,7 +726,7 @@ export default function ComprasMetricasPage() {
           <KpiCard
             label="Ingresados ese mes"
             value={<StackedKpi items={`${fmtNum(col("ingresados"))} items`} unidades={`${fmtNum(unid("ingresados"))} u.`} importe={fmtMoney(imp("ingresados"))} />}
-            hint="Todos los ingresados en el mes"
+            hint="De lo que faltó, lo que ya ingresó en el mes — valorizado por lo que faltaba"
             icon={PackageCheck}
             accent="green"
           />

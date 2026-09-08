@@ -636,6 +636,26 @@ def _ajuste_rankings(dias_acum, dias_mes, dias_total, vendedor, forzar):
         return {"ajuste": 0.0, "ajusteMes": 0.0}
 
 
+# Nombres del maestro de clientes para códigos sueltos (los que entran al
+# ranking sólo por una nota de crédito). Va en lotes: `IN` con miles de
+# parámetros no lo acepta el driver, y 500 por vuelta alcanza de sobra.
+def _nombres_clientes(cur, codigos: list) -> dict:
+    out: dict[int, str] = {}
+    codigos = [int(c) for c in codigos if c is not None]
+    for i in range(0, len(codigos), 500):
+        lote = codigos[i:i + 500]
+        marcas = ",".join("?" for _ in lote)
+        cur.execute(
+            "SELECT CodCliente, LTRIM(RTRIM(Cliente_Nombre)) "
+            f"FROM MAGNUS_SITD.dbo.Clientes WHERE CodCliente IN ({marcas})",
+            tuple(lote),
+        )
+        for cod, nombre in cur.fetchall():
+            if cod is not None:
+                out[int(cod)] = (str(nombre).strip() if nombre else None)
+    return out
+
+
 def fetch_top_clientes(
     vendedor: int | None = None,
     limit: int = 1_000_000,  # "sin límite" (2026-08-19) — ver main.py
@@ -702,15 +722,36 @@ def fetch_top_clientes(
         # filtrar y ordenar — ver el bloque de subempresas arriba.
         filas = unir(filas_dos(cur, sql_m, sql_p, params), (0,), (2, 3))
 
+        # Ajuste POR CLIENTE (2026-09-08): las ND/NC por concepto
+        # (23/24/25/60/62) no tienen artículo pero sí cliente, así que se
+        # imputan a la fila y las columnas del ranking dejan de ser brutas.
+        # Antes viajaban sólo en el pie (`ajuste`/`ajusteMes`), que ahora es
+        # informativo: el número ya está adentro de `monto`/`montoMes`.
+        # El import va acá adentro por el ciclo bonificaciones→ventas.
+        try:
+            from bonificaciones import ajuste_por_cliente
+
+            ajustes = dict(
+                ajuste_por_cliente(dias_acum, dias_mes, dias_total,
+                                   vendedor=vendedor, forzar=forzar)
+            )
+        except Exception:
+            ajustes = {}
+
         clientes: list[dict] = []
         for cod, nombre, monto, monto_mes in filas:
             if cod is None:
                 continue
-            m = round(float(_safe(monto) or 0), 2)
-            m_mes = round(float(_safe(monto_mes) or 0), 2)
-            # Equivalente al HAVING que estaba en el SQL: la venta del rango
-            # completo (acumulado + mes en curso) tiene que ser positiva.
-            if m + m_mes <= 0:
+            bruto = round(float(_safe(monto) or 0), 2)
+            bruto_mes = round(float(_safe(monto_mes) or 0), 2)
+            a_acum, a_mes = ajustes.pop(int(cod), (0.0, 0.0))
+            m = round(bruto + a_acum, 2)
+            m_mes = round(bruto_mes + a_mes, 2)
+            # Equivalente al HAVING que estaba en el SQL: se descarta el
+            # cliente sin actividad real — venta con artículo no positiva Y
+            # sin ninguna nota de crédito. Con ajuste el neto puede quedar
+            # negativo y la fila SÍ tiene que verse: es plata del período.
+            if bruto + bruto_mes <= 0 and not (a_acum or a_mes):
                 continue
             clientes.append(
                 {
@@ -718,8 +759,32 @@ def fetch_top_clientes(
                     "nombre": (str(nombre).strip() if nombre else None),
                     "monto": m,
                     "montoMes": m_mes,
+                    "bruto": bruto,
+                    "brutoMes": bruto_mes,
+                    "ajuste": a_acum,
+                    "ajusteMes": a_mes,
                 }
             )
+
+        # Clientes que en el período SOLO tienen nota de crédito por concepto
+        # (ninguna factura con artículo): no vienen en `filas`, y sin esto el
+        # pie no cerraría con el pivot. El nombre se busca en el maestro.
+        if ajustes:
+            nombres = _nombres_clientes(cur, list(ajustes.keys()))
+            for cod, (a_acum, a_mes) in ajustes.items():
+                clientes.append(
+                    {
+                        "numero": int(cod),
+                        "nombre": nombres.get(int(cod)),
+                        "monto": a_acum,
+                        "montoMes": a_mes,
+                        "bruto": 0.0,
+                        "brutoMes": 0.0,
+                        "ajuste": a_acum,
+                        "ajusteMes": a_mes,
+                    }
+                )
+
         clientes.sort(key=lambda c: (c["monto"], c["montoMes"]), reverse=True)
 
         resultado = {
@@ -730,7 +795,15 @@ def fetch_top_clientes(
             "mesActual": f"{mes_ym[0]:04d}-{mes_ym[1]:02d}",
             "totalClientes": len(clientes),
             "porMonto": clientes[:limit_i],
-            **_ajuste_rankings(dias_acum, dias_mes, dias_total, vendedor, forzar),
+            # Netos del ranking COMPLETO (no sólo de las filas mostradas) —
+            # ya incluyen el ajuste.
+            "total": round(sum(c["monto"] for c in clientes), 2),
+            "totalMes": round(sum(c["montoMes"] for c in clientes), 2),
+            # Informativo: cuánto de ese total es ajuste. NO se vuelve a
+            # sumar en el pie (ver `ajusteIncluido`).
+            "ajuste": round(sum(c["ajuste"] for c in clientes), 2),
+            "ajusteMes": round(sum(c["ajusteMes"] for c in clientes), 2),
+            "ajusteIncluido": True,
         }
         _TOP_CLIENTES_CACHE[cache_key] = (ahora, resultado)
         return resultado
@@ -1311,6 +1384,30 @@ def fetch_ventas_por_linea(cod_cliente: int, vendedor: int | None = None) -> dic
             tot_destino["meses"][mes - 1]["cantidad"] += cant
             tot_destino["meses"][mes - 1]["monto"] += monto
 
+        # Ajuste del cliente por mes (2026-09-08): comprobantes 23/24/25/60/62.
+        # No tienen artículo, así que NO se pueden abrir por línea — las filas
+        # de la tabla siguen en bruto y el ajuste entra en los TOTALES (año y
+        # cada columna de mes) y viaja aparte en `ajustes` para poder
+        # mostrarlo. Sin unidades: el concepto no tiene cantidad.
+        ajustes_ant, ajustes_act = _anio_vacio(), _anio_vacio()
+        try:
+            from bonificaciones import ajuste_cliente_por_mes
+
+            for (anio, mes), monto in ajuste_cliente_por_mes(
+                cod_cliente, anio_anterior
+            ).items():
+                if anio not in (anio_actual, anio_anterior) or not monto:
+                    continue
+                destino = ajustes_act if anio == anio_actual else ajustes_ant
+                tot_destino = tot_actual if anio == anio_actual else tot_anterior
+                destino["monto"] += monto
+                destino["meses"][mes - 1]["monto"] += monto
+                tot_destino["monto"] += monto
+                tot_destino["meses"][mes - 1]["monto"] += monto
+                tiene_datos = True
+        except Exception:
+            ajustes_ant, ajustes_act = _anio_vacio(), _anio_vacio()
+
         lineas_out = []
         for b in lineas.values():
             b["anioAnterior"] = _round_anio(b["anioAnterior"])
@@ -1341,6 +1438,12 @@ def fetch_ventas_por_linea(cod_cliente: int, vendedor: int | None = None) -> dic
             "totales": {
                 "anioAnterior": _round_anio(tot_anterior),
                 "anioActual": _round_anio(tot_actual),
+            },
+            # Parte del total que NO está en ninguna fila (bonificaciones y
+            # ajustes, sin línea). Ya está sumada adentro de `totales`.
+            "ajustes": {
+                "anioAnterior": _round_anio(ajustes_ant),
+                "anioActual": _round_anio(ajustes_act),
             },
         }
     finally:

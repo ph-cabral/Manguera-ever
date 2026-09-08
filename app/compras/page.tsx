@@ -67,6 +67,9 @@ interface Resp {
   // "Con OC ese mes", que por el funnel solo cuenta los artículos faltantes.
   ocTotalItems: number;
   ocTotalUnidades: number;
+  // Items faltantes del mes que el total deja afuera a propósito: Fábrica
+  // (producción interna) + Original. No se compran.
+  excluidosItems?: number;
   origenDefault: string;
   // Faltantes del mes clasificados por origen real del artículo: alimenta la
   // torta y los badges del selector.
@@ -417,10 +420,15 @@ export default function ComprasMetricasPage() {
     (key: string) => funnel?.columnas.find((c) => c.key === key)?.importe ?? 0,
     [funnel],
   );
-  // Mismo funnel pero SIN recorte por origen (nacionales + importados + fábrica
-  // + original + otros): alimenta la fila de cards "total del mes". Ya viene
-  // calculado en la respuesta, no cuesta ninguna consulta.
-  const funnelTodos = useMemo(() => data?.funnels?.todos, [data]);
+  // Total del mes = Nacionales + Importados + Otros (las solapas del selector).
+  // Fábrica y Original quedan AFUERA: no se compran, y Fábrica ni siquiera
+  // puede aparecer en el set de OC (indicadores-api excluye los artículos
+  // Fabril), así que sumarla sólo inflaba el "sin cubrir" del total.
+  // Ya viene calculado en la respuesta: no cuesta ninguna consulta.
+  const funnelTodos = useMemo(
+    () => data?.funnels?.compras ?? data?.funnels?.todos,
+    [data],
+  );
   const colT = useCallback(
     (key: string) => funnelTodos?.columnas.find((c) => c.key === key)?.total ?? 0,
     [funnelTodos],
@@ -665,31 +673,37 @@ export default function ComprasMetricasPage() {
         )}
 
 
-        {/* Total del mes SIN separar por origen (todos los tipos de artículo).
-            Mismo funnel, clave "todos": no dispara ninguna consulta extra. */}
+        {/* Total del mes = Nacionales + Importados (+ Otros). Mismo funnel,
+            clave "compras": no dispara ninguna consulta extra. Fábrica y
+            Original quedan afuera — no se compran. */}
         <div>
-          <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-500 mb-2">
-            <Globe size={12} /> Total del mes · todos los orígenes
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px] uppercase tracking-wider text-zinc-500 mb-2">
+            <Globe size={12} /> Total del mes · Nacionales + Importados
+            {!!data?.excluidosItems && (
+              <span className="normal-case tracking-normal text-zinc-600">
+                · {fmtNum(data.excluidosItems)} items de Fábrica/Original quedan afuera (no se compran)
+              </span>
+            )}
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <KpiCard
               label="Faltantes del mes (total)"
               value={<StackedKpi items={`${fmtNum(colT("faltantes"))} items`} unidades={`${fmtNum(unidT("faltantes"))} u.`} importe={fmtMoney(impT("faltantes"))} />}
-              hint="Todos los orígenes juntos (nacionales, importados, fábrica, original y otros): artículos con unidades pendientes en el mes, sus unidades y cuánto faltó en $ (a precio de venta)"
+              hint="Nacionales + Importados (+ Otros) juntos: artículos con unidades pendientes en el mes, sus unidades y cuánto faltó en $ (a precio de venta). Fábrica y Original no entran: son producción interna, no compra"
               icon={PackageX}
               accent="zinc"
             />
             <KpiCard
               label="Con OC ese mes (total)"
               value={<StackedKpi items={`${fmtNum(colT("conOC"))} items`} unidades={`${fmtNum(unidT("conOC"))} u.`} importe={fmtMoney(impT("conOC"))} />}
-              hint="De esos faltantes, con Orden de Compra hecha en el mes — unidades pedidas en esas OC y su $, sin separar por origen"
+              hint="De esos faltantes, con Orden de Compra de mercadería hecha en el mes (comprobantes 70 ORDEN DE COMPRA y 75 OC IMPO) — unidades pedidas en esas OC y su $. Ojo: el importado se pide por contenedor con meses de anticipación, así que casi nunca tiene OC del mismo mes en que faltó"
               icon={ShoppingCart}
               accent="zinc"
             />
             <KpiCard
               label="Ingresados ese mes (total)"
               value={<StackedKpi items={`${fmtNum(colT("ingresados"))} items`} unidades={`${fmtNum(unidT("ingresados"))} u.`} importe={fmtMoney(impT("ingresados"))} />}
-              hint="De esos, ya recibidos en depósito — unidades ingresadas por remito y su $, sin separar por origen"
+              hint="De esos, ya recibidos en depósito — unidades ingresadas por remito y su $"
               icon={PackageCheck}
               accent="zinc"
             />
@@ -707,7 +721,7 @@ export default function ComprasMetricasPage() {
           <KpiCard
             label="Con OC ese mes"
             value={<StackedKpi items={`${fmtNum(col("conOC"))} items`} unidades={`${fmtNum(unid("conOC"))} u.`} importe={fmtMoney(imp("conOC"))} />}
-            hint={`De los faltantes, con Orden de Compra — unidades pedidas en esas OC y su $. El total son los ${fmtNum(data?.ocTotalItems ?? 0)} items (${fmtNum(data?.ocTotalUnidades ?? 0)} u.) con OC ese mes, faltantes o no`}
+            hint={`De los faltantes, con Orden de Compra de mercadería hecha ese mes (comprobantes 70 ORDEN DE COMPRA y 75 OC IMPO; las OC de presupuesto por área — RRHH, Marketing, Sistemas, Industria — no cuentan). El total son los ${fmtNum(data?.ocTotalItems ?? 0)} items (${fmtNum(data?.ocTotalUnidades ?? 0)} u.) con OC ese mes, faltantes o no`}
             icon={ShoppingCart}
             accent="blue"
           />

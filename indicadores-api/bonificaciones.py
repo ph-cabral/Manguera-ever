@@ -57,6 +57,7 @@ Gotchas heredados (ver el docstring de ventas.py antes de tocar nada)
 """
 import os
 import time
+from datetime import date, timedelta
 
 from cartera import SQL_JOIN_CARTERA, params_cartera
 from db import get_connection
@@ -447,3 +448,136 @@ def ajuste_ventanas(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
         conn.close()
 
     return _guardar(key, {"acum": acum, "mes": mes})
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Ajuste POR CLIENTE (2026-09-08)
+# ──────────────────────────────────────────────────────────────────────────
+# `ajuste_ventanas` devuelve UN número para todo el ranking y por eso el
+# ajuste sólo podía vivir en el pie de la tabla. La ND/NC por concepto SÍ
+# tiene cliente (`Ven_CompCabecera.CodCliente`) y vendedor: lo único que no
+# tiene es artículo, o sea LÍNEA. Así que se puede imputar por cliente —
+# es lo que hacen estas dos funciones — y con eso las columnas del ranking
+# de clientes y los totales de la tabla del cliente pasan a contemplar los
+# 13 comprobantes de la lista blanca, no sólo los 8 que tienen artículo.
+# Los cortes por LÍNEA siguen en bruto a propósito: repartir una NC de
+# empresa entre líneas sería un supuesto.
+#
+# Mismo criterio de vendedor que `ajuste_ventanas`: la CARTERA del cliente
+# (no `cab.Vendedor`), porque es el eje con el que se arma el bruto al que
+# se le suma.
+_SELECT_AJUSTE_CLI = f"""
+SELECT
+    cab.CodCliente AS CodCliente,
+    SUM(CASE WHEN cab.FecMovim BETWEEN ? AND ? THEN {_AJUSTE_ROW} ELSE 0 END) AS Acum,
+    SUM(CASE WHEN cab.FecMovim BETWEEN ? AND ? THEN {_AJUSTE_ROW} ELSE 0 END) AS Mes
+"""
+
+_GROUP_CLI = "GROUP BY cab.CodCliente\n"
+
+_SQL_AJUSTE_CLI_TODOS = _SELECT_AJUSTE_CLI + """
+FROM Ven_RenDebCre    rd
+JOIN Ven_CompCabecera cab ON cab.NroMovVenta = rd.NroMovVenta
+JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
+LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
+""" + _WHERE_AJUSTE + _GROUP_CLI
+
+_SQL_AJUSTE_CLI_VENDEDOR = _SELECT_AJUSTE_CLI + """
+FROM MAGNUS_SITD.dbo.Clientes c
+""" + SQL_JOIN_CARTERA + """
+JOIN Ven_CompCabecera cab ON cab.CodCliente  = c.CodCliente
+JOIN Ven_RenDebCre    rd  ON rd.NroMovVenta  = cab.NroMovVenta
+JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
+LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
+""" + _WHERE_AJUSTE + _GROUP_CLI
+
+_SQL_AJUSTE_CLI_TODOS_PRUEBA = _prueba(_SQL_AJUSTE_CLI_TODOS)
+_SQL_AJUSTE_CLI_VENDEDOR_PRUEBA = _prueba(_SQL_AJUSTE_CLI_VENDEDOR)
+
+
+def ajuste_por_cliente(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
+                       dias_total: tuple[int, int],
+                       vendedor: int | None = None,
+                       forzar: bool = False) -> dict[int, tuple[float, float]]:
+    """{CodCliente: (ajuste_acumulado, ajuste_mes_en_curso)} de las dos
+    ventanas de /ventas/vendedor, ya con signo (negativo = bonificación).
+
+    Mismos rangos y mismo recorte por cartera que `ajuste_ventanas`, de una
+    sola pasada por sub-empresa. Cachea 15 min como el resto del módulo."""
+    key = ("aj-cli", dias_acum, dias_mes, vendedor)
+    hit = _cacheado(key, forzar)
+    if hit is not None:
+        return hit
+
+    if vendedor is not None:
+        sql, sql_p = _SQL_AJUSTE_CLI_VENDEDOR, _SQL_AJUSTE_CLI_VENDEDOR_PRUEBA
+        params = dias_acum + dias_mes + params_cartera(vendedor) + dias_total
+    else:
+        sql, sql_p = _SQL_AJUSTE_CLI_TODOS, _SQL_AJUSTE_CLI_TODOS_PRUEBA
+        params = dias_acum + dias_mes + dias_total
+
+    conn, cur = _conn()
+    try:
+        out: dict[int, tuple[float, float]] = {}
+        for cod, acum, mes in unir(filas_dos(cur, sql, sql_p, params), (0,), (1, 2)):
+            if cod is None:
+                continue
+            a = round(float(_safe(acum) or 0), 2)
+            m = round(float(_safe(mes) or 0), 2)
+            if a or m:
+                out[int(cod)] = (a, m)
+    finally:
+        cur.close()
+        conn.close()
+    return _guardar(key, out)
+
+
+# Apertura mensual del ajuste de UN cliente — para los totales de la tabla
+# línea×mes de /ventas/vendedor. Se filtra por `CodCliente` (columna simple,
+# sargable) y por un piso de `FecMovim` entero: nunca contra una fecha
+# calculada (ver el gotcha de fechas en ventas.py). El GROUP BY por FecMovim
+# devuelve pocas filas por cliente y el año/mes se arma en Python.
+_SQL_AJUSTE_CLI_DIA = f"""
+SELECT cab.FecMovim AS Dia, {_IMPORTE} AS Importe
+FROM Ven_RenDebCre    rd
+JOIN Ven_CompCabecera cab ON cab.NroMovVenta = rd.NroMovVenta
+JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
+LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
+WHERE cc.CompCodigo IN ({_IN_COMPROBANTES})
+  AND cc.EvitaInformesYListados <> 1
+  AND ISNULL(cn.TotalizaImpEn, 0) <> 6
+  AND cab.CodCliente = ?
+  AND cab.FecMovim >= ?
+GROUP BY cab.FecMovim
+"""
+
+_SQL_AJUSTE_CLI_DIA_PRUEBA = _prueba(_SQL_AJUSTE_CLI_DIA)
+
+
+def ajuste_cliente_por_mes(cod_cliente: int, anio_desde: int,
+                           forzar: bool = False) -> dict[tuple[int, int], float]:
+    """{(año, mes): monto} del ajuste de un cliente, desde el 1/1/`anio_desde`.
+    Signo incluido; sin unidades (el concepto no tiene cantidad)."""
+    key = ("aj-cli-mes", int(cod_cliente), int(anio_desde))
+    hit = _cacheado(key, forzar)
+    if hit is not None:
+        return hit
+
+    piso = (date(int(anio_desde), 1, 1) - BASE_DATE).days
+    params = (int(cod_cliente), piso)
+
+    conn, cur = _conn()
+    try:
+        out: dict[tuple[int, int], float] = {}
+        for dia, importe in filas_dos(
+            cur, _SQL_AJUSTE_CLI_DIA, _SQL_AJUSTE_CLI_DIA_PRUEBA, params
+        ):
+            if dia is None:
+                continue
+            f = BASE_DATE + timedelta(days=int(dia))
+            k = (f.year, f.month)
+            out[k] = out.get(k, 0.0) + float(_safe(importe) or 0)
+    finally:
+        cur.close()
+        conn.close()
+    return _guardar(key, out)

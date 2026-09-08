@@ -90,6 +90,11 @@ interface RespVentasVendedor {
   tieneDatos: boolean;
   lineas: LineaRow[];
   totales: { anioAnterior: AnioVal; anioActual: AnioVal };
+  // Bonificaciones y ajustes del cliente (comprobantes 23/24/25/60/62), por
+  // año y por mes. YA están sumados adentro de `totales` — viajan aparte
+  // sólo para poder decir cuánto del total no está en ninguna fila: no
+  // tienen artículo, o sea que no tienen línea. Solo $, sin unidades.
+  ajustes?: { anioAnterior: AnioVal; anioActual: AnioVal };
 }
 
 // Rankings del pie de la vista — debajo de la tabla principal, con su
@@ -120,10 +125,16 @@ interface RespVentasVendedor {
 interface TopCliente {
   numero: number;
   nombre: string | null;
+  // NETO (2026-09-08): venta con artículo + bonificaciones y ajustes del
+  // cliente. `bruto`/`ajuste` son la apertura de ese mismo número.
   monto: number;
   // Solo el mes en curso, aparte del acumulado (2026-09-04) — es la
   // columna de la derecha, NO está sumado en `monto`.
   montoMes: number;
+  bruto?: number;
+  brutoMes?: number;
+  ajuste?: number;
+  ajusteMes?: number;
 }
 
 interface RespTopClientes {
@@ -132,11 +143,16 @@ interface RespTopClientes {
   mesActual: string; // "YYYY-MM"
   totalClientes: number;
   porMonto: TopCliente[];
+  // Netos del ranking completo (no sólo de las filas listadas).
+  total?: number;
+  totalMes?: number;
   // Bonificaciones y ajustes del mismo rango y la misma cartera. Negativo
-  // (es una nota de crédito). NO está prorrateado adentro de las filas: cada
-  // fila es venta bruta y el neto se arma en el pie. Ver bonificaciones.py.
+  // (es una nota de crédito). Desde 2026-09-08 el back los imputa POR
+  // CLIENTE, así que ya están adentro de cada fila: `ajusteIncluido` lo
+  // marca y el pie NO los vuelve a restar, sólo los informa.
   ajuste?: number;
   ajusteMes?: number;
+  ajusteIncluido?: boolean;
 }
 
 // Desde 2026-08-26 cada línea trae las DOS métricas y el back manda las dos
@@ -774,6 +790,27 @@ export default function VentasVendedorPage() {
   const sinDatos = !!fuenteTabla && !fuenteTabla.tieneDatos;
   // Encabezado de la primera columna y de la etiqueta de conteo del header.
   const colEtiqueta = esModoLinea ? "Cliente" : "Línea";
+
+  // Aviso del pie de la tabla del cliente (2026-09-08): el TOTAL incluye las
+  // bonificaciones y ajustes del cliente (comprobantes 23/24/25/60/62), que
+  // no tienen artículo y por lo tanto no están en ninguna fila de línea. Sin
+  // esto la suma de las filas no daría el total y parecería un error.
+  // Sólo en $ (el concepto no tiene cantidad) y sólo en modo "cliente":
+  // el modo "linea" está acotado a UNA línea y ahí el ajuste no aplica.
+  const tituloTotalTabla = useMemo(() => {
+    if (esModoLinea || modoModal === "unidades") return undefined;
+    const aj = data?.ajustes;
+    if (!aj) return undefined;
+    const act = sumaPeriodo(aj.anioActual).monto;
+    const ant = sumaPeriodo(aj.anioAnterior).monto;
+    if (!act && !ant) return undefined;
+    return (
+      "El total incluye bonificaciones y ajustes del cliente (notas de crédito " +
+      "por concepto, sin artículo): " +
+      `${fmtMoney(ant)} en ${data?.anioAnterior} y ${fmtMoney(act)} en ${data?.anioActual}. ` +
+      "No tienen línea, así que no figuran en ninguna fila."
+    );
+  }, [esModoLinea, modoModal, data, sumaPeriodo]);
   // Único caso sin meses: YTD en enero (todavía no hay mes anterior).
   const sinMesesPeriodo = periodo === "ytd" && mesesActivos.length === 0;
 
@@ -929,11 +966,26 @@ export default function VentasVendedorPage() {
   // de una nota de crédito no tiene cantidad.
   const topAjuste = useMemo(() => {
     if (modo === "unidades") return null;
+    // Ranking de CLIENTES (2026-09-08): el ajuste ya viene imputado adentro
+    // de cada fila, así que el pie no lo abre en bruto → ajuste → neto; lo
+    // informa aparte (topAjusteIncluido). El de LÍNEAS sigue como estaba:
+    // una NC por concepto no tiene artículo y por lo tanto no tiene línea.
+    if (topVista === "clientes" && topResp?.ajusteIncluido) return null;
     const acum = topResp?.ajuste ?? 0;
     const mes = topResp?.ajusteMes ?? 0;
     if (!acum && !mes) return null;
     return { acum, mes };
-  }, [topResp, modo]);
+  }, [topResp, modo, topVista]);
+
+  // Cuánto de las filas del ranking de clientes son bonificaciones y ajustes
+  // (ya sumados en cada fila). Sólo para mostrarlo debajo del total.
+  const topAjusteIncluido = useMemo(() => {
+    if (topVista !== "clientes" || !topResp?.ajusteIncluido) return null;
+    const acum = topResp?.ajuste ?? 0;
+    const mes = topResp?.ajusteMes ?? 0;
+    if (!acum && !mes) return null;
+    return { acum, mes };
+  }, [topResp, topVista]);
 
   // Etiquetas de encabezado. Salen del BACK (`desde`/`hasta`/`mesActual`)
   // para que el título no pueda contradecir a los datos. En enero
@@ -1737,8 +1789,12 @@ export default function VentasVendedorPage() {
                                     setHoverRow(null);
                                     setHoverCol(COL_LINEA);
                                   }}
+                                  title={tituloTotalTabla}
                                 >
                                   Total
+                                  {tituloTotalTabla && (
+                                    <span className="text-yellow-400/70"> *</span>
+                                  )}
                                 </td>
                                 {desglosado &&
                                   fuenteTabla!.totales.anioAnterior.meses
@@ -2112,6 +2168,23 @@ export default function VentasVendedorPage() {
                             {fmtTop(topSumas.mes)}
                           </td>
                         </tr>
+                        {topAjusteIncluido && (
+                          <tr className="text-[11px]">
+                            <td className="px-3 py-1.5" />
+                            <td
+                              className="px-3 py-1.5 text-zinc-500 whitespace-nowrap"
+                              title="Notas de crédito por concepto (bonificación, bonificación fuera de recibo, crédito interno) y ajustes de saldo. No tienen artículo: se imputan al cliente, no a una línea. Ya están restados en cada fila y en el total."
+                            >
+                              Incluye bonificaciones y ajustes
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-red-400/80 border-l border-zinc-800 whitespace-nowrap">
+                              {fmtTop(topAjusteIncluido.acum)}
+                            </td>
+                            <td className="px-3 py-1.5 text-right tabular-nums text-red-400/80 border-l border-zinc-800 whitespace-nowrap">
+                              {fmtTop(topAjusteIncluido.mes)}
+                            </td>
+                          </tr>
+                        )}
                         {topAjuste && (
                           <>
                             <tr>

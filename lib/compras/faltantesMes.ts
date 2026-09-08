@@ -160,16 +160,17 @@ export function pasaRecorte(a: ArticuloMes, estadoDisponible: boolean): boolean 
 /** Orígenes que se ofrecen en el selector de /compras (mismo orden que /compras/faltantes). */
 export const ORIGENES_COMPRAS: OrigenArticulo[] = ["nacionales", "importados", "otros"];
 
-export const ORIGEN_LABEL: Record<OrigenArticulo | "todos", string> = {
+export const ORIGEN_LABEL: Record<OrigenArticulo | "todos" | "compras", string> = {
   nacionales: "Nacionales",
   importados: "Importados",
   otros: "Otros",
   fabrica: "Fábrica",
   original: "Original",
   todos: "Todos",
+  compras: "Compras",
 };
 
-export type OrigenFunnel = OrigenArticulo | "todos";
+export type OrigenFunnel = OrigenArticulo | "todos" | "compras";
 
 /**
  * Códigos faltantes del mes (todo artículo con renglón pendiente que pasa el
@@ -183,7 +184,17 @@ export function codigosPorOrigen(
   const out: string[] = [];
   for (const a of faltantes.articulos.values()) {
     if (!pasaRecorte(a, faltantes.estadoDisponible)) continue;
-    if (origen !== "todos" && a.origen !== origen) continue;
+    // "compras" = la unión de las solapas del selector (Nacionales +
+    // Importados + Otros). Deja AFUERA Fábrica y Original, que no se compran:
+    // Fábrica es producción interna y ni siquiera puede aparecer en el set de
+    // OC (indicadores-api/compras.py excluye los artículos Fabril), así que
+    // contarla en el total sólo servía para inflar el "sin cubrir".
+    // "todos" sigue existiendo para quien necesite el universo completo.
+    if (origen === "compras") {
+      if (!ORIGENES_COMPRAS.includes(a.origen)) continue;
+    } else if (origen !== "todos" && a.origen !== origen) {
+      continue;
+    }
     out.push(a.cod);
   }
   return out.sort();

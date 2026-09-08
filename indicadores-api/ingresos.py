@@ -68,7 +68,16 @@ INGRESOS_DIAS_DEFAULT = 60
 CODIGOS_REMITO_INGRESO = (59, 60, 61, 160, 590)
 
 # Candidatos para la columna del código de comprobante en Com_RemitoCabecera.
+# 2026-09-08 — FIX: la columna REAL es `CompCodigo` (smallint) y no estaba en la
+# lista, así que _detectar_col_comprobante devolvía "" y el filtro por
+# CODIGOS_REMITO_INGRESO NUNCA se aplicaba: la respuesta salía con
+# comprobanteWarn=True y contaba TODO renglón de Com_RemitoRenglones del rango,
+# devoluciones a proveedor incluidas (71 REMITO DEVOLUCION, 73 REM DEV FABRICA,
+# 96). En agosto 2026 no cambiaba el número de casualidad —los únicos
+# comprobantes del mes eran 59/60/61/160/590, justo los válidos— pero cualquier
+# mes con una devolución la contaba como ingreso.
 CAND_COL_COMPROBANTE = (
+    "CompCodigo",
     "CodComprobante", "CodComp", "Comprobante", "CodTipoComprobante",
     "TipoComprobante", "CodTipoComp", "TipoComp", "CodMovimiento", "CodMov",
 )

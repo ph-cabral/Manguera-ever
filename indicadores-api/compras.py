@@ -46,6 +46,28 @@ _EXCL = (
     if ESTADOS_CAB_EXCLUIR else ""
 )
 
+# ── Tipo de comprobante de la OC (2026-09-08) ────────────────────────────────
+# Com_OrdCompCabecera.CompCodigo → Com_CodCompCpra.DetalleComp. Es el "área" de
+# la tab Presupuestos de /finanza (ver oc_areas.py), NO el comprador:
+#   70 ORDEN DE COMPRA · 74 OC RRHH · 75 OC IMPO · 76 OC INDUSTRIA ·
+#   77 OC MARKETING · 78 OC SISTEMAS IT · 80 INGRESO INDUSTRIA A COMERCIAL
+#
+# Compra REAL de mercadería para reventa = 70 (nacional) + 75 (importación).
+# El resto son presupuestos por área (gasto de RRHH / marketing / sistemas /
+# industria) o, en el caso del 80, el pase interno de industria a comercial:
+# ninguno cubre un faltante de venta ni es "lo comprado del mes".
+#
+# Antes NO se filtraba y se colaban en el funnel de /compras. Agosto 2026, ya
+# recortado por tipo de artículo: 70 → 739 items · 2.128.782 u. | 77 → 1 item |
+# 78 → 1 item | 80 → 24 items · 1.065 u. En el faltante Nacional del mes eso
+# eran 1 item / $13.265 de más; en el total, 3 items / $588.380.
+COMP_CODIGOS_OC_COMPRA: tuple[int, ...] = (70, 75)
+
+_COMP = (
+    f"AND cab.CompCodigo IN ({','.join(str(c) for c in COMP_CODIGOS_OC_COMPRA)})"
+    if COMP_CODIGOS_OC_COMPRA else ""
+)
+
 # Origen del artículo: StkFer_Articulos.NacionalImportado → Stk_TiposArticulos.
 # Descripcion ∈ {Nacional, Importado, Fabril, Generico, Original}.
 #   · Generico  = presupuestos de servicio (P.INDUSTRIA, P.MKT) — NUNCA son
@@ -281,6 +303,7 @@ INNER JOIN EVERWEAR.dbo.Com_OrdCompCabecera cab ON cab.NroOrdCompra = r.NroOrdCo
 {_join_tipo}
 WHERE cab.FecMovim BETWEEN {_d1} AND {_d2}
   {_excl}
+  {_comp}
   {_tipo}
 """
 
@@ -303,7 +326,8 @@ def fetch_ordenes_articulos_rango(desde: str, hasta: str, incluir_fabril: bool =
     d2 = datetime.strptime(str(hasta)[:10], "%Y-%m-%d").date()
 
     sql = SQL_OC_RANGO.format(
-        _join_tipo=_JOIN_TIPO, _excl=_EXCL, _tipo=_cond_tipo(incluir_fabril),
+        _join_tipo=_JOIN_TIPO, _excl=_EXCL, _comp=_COMP,
+        _tipo=_cond_tipo(incluir_fabril),
         _d1=_dias(d1), _d2=_dias(d2),
     )
 
@@ -359,6 +383,7 @@ LEFT  JOIN EVERWEAR.dbo.Com_Proveedores     pr  ON pr.CodProveed    = cab.CodPro
 LEFT  JOIN EVERWEAR.dbo.StkFer_ArtParamet   ap_t ON ap_t.ArticuloPatron = a_t.ArticuloPatron
 WHERE cab.FecMovim BETWEEN {_d1} AND {_d2}
   {_excl}
+  {_comp}
   {_tipo}
 """
 
@@ -388,7 +413,8 @@ def fetch_ordenes_detalle_rango(desde: str, hasta: str, incluir_fabril: bool = F
     d2 = datetime.strptime(str(hasta)[:10], "%Y-%m-%d").date()
 
     sql = SQL_OC_RANGO_DETALLE.format(
-        _join_tipo=_JOIN_TIPO, _excl=_EXCL, _tipo=_cond_tipo(incluir_fabril),
+        _join_tipo=_JOIN_TIPO, _excl=_EXCL, _comp=_COMP,
+        _tipo=_cond_tipo(incluir_fabril),
         _d1=_dias(d1), _d2=_dias(d2),
     )
 
@@ -474,7 +500,8 @@ def fetch_compras_valorizado(desde: str, hasta: str, incluir_fabril: bool = Fals
     d2 = datetime.strptime(str(hasta)[:10], "%Y-%m-%d").date()
 
     sql = SQL_OC_RANGO.format(
-        _join_tipo=_JOIN_TIPO, _excl=_EXCL, _tipo=_cond_tipo(incluir_fabril),
+        _join_tipo=_JOIN_TIPO, _excl=_EXCL, _comp=_COMP,
+        _tipo=_cond_tipo(incluir_fabril),
         _d1=_dias(d1), _d2=_dias(d2),
     )
 

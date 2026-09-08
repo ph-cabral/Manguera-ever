@@ -291,8 +291,16 @@ export async function GET(req: NextRequest) {
   let ocTotalUnidades = 0;
   for (const u of ocUnidMap.values()) ocTotalUnidades += u;
 
-  // 3) Un funnel por origen + "todos". Todo en memoria, sin consultas extra.
-  const claves: OrigenFunnel[] = ["nacionales", "importados", "otros", "todos"];
+  // 3) Un funnel por origen + los dos agregados. Todo en memoria, sin consultas
+  //    extra.
+  //    · "compras" = Nacionales + Importados + Otros (las solapas del selector).
+  //      Es el total que muestra la vista: Fábrica y Original quedan afuera
+  //      porque no se compran — Fábrica ni siquiera puede entrar al set de OC
+  //      (compras.py excluye los artículos Fabril), así que sumarla al total
+  //      sólo inflaba el "sin cubrir".
+  //    · "todos" = el universo completo, se sigue devolviendo para el que lo
+  //      necesite (y para poder informar cuánto se dejó afuera).
+  const claves: OrigenFunnel[] = ["nacionales", "importados", "otros", "compras", "todos"];
   const funnels: Record<string, Funnel> = {};
   for (const k of claves) {
     funnels[k] = armarFunnel(k, faltMes, setB, setC, ocUnidMap, ingUnidMap, precioUnitMap);
@@ -322,6 +330,11 @@ export async function GET(req: NextRequest) {
     unidadesDescartadas: r2(faltMes.unidadesDescartadas),
     ocTotalItems: setB.size,
     ocTotalUnidades: r2(ocTotalUnidades),
+    // Items del mes que el total "compras" deja afuera a propósito (Fábrica +
+    // Original). Se informan para que nada desaparezca en silencio.
+    excluidosItems:
+      codigosPorOrigen(faltMes, "fabrica").length +
+      codigosPorOrigen(faltMes, "original").length,
     origenDefault: "nacionales",
     origenes,
     funnels,

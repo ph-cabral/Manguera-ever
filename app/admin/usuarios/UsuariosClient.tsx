@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Loader2, RefreshCw, UserPlus, ShieldCheck, ShieldOff, KeyRound } from "lucide-react";
+import { Loader2, RefreshCw, UserPlus, ShieldCheck, ShieldOff, KeyRound, Trash2, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -280,6 +280,8 @@ export function UsuariosClient() {
         Nota: los cambios de rol o de permisos se aplican la próxima vez que la persona inicia sesión. El
         vendedor asignado, en cambio, se aplica al toque (no hace falta relogin).
       </p>
+
+      <PanelAntecesores vendedores={vendedores} vendedoresError={vendedoresError} />
 
       {resetUser && (
         <div
@@ -684,6 +686,231 @@ function CeldaVendedor({
           : `${usuario.vendedorCodigo} — ${nombreGuardado ?? "(no existe en Magnus)"}`}
         {guardado?.activo === false && " · de baja"}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Sucesión de vendedores (2026-09-08) — quién se quedó con la cartera de
+ * quién.
+ *
+ * POR QUÉ ESTÁ ACÁ. Desde esta fecha /ventas/vendedor, /ventas/bulones y
+ * /ventas/faltantes cortan por el vendedor DEL COMPROBANTE
+ * (Ven_CompCabecera.vendedor), que es el mismo eje del pivot
+ * Ventas_Debitos_Creditos y de ventas_subempresa_mensual: por eso los números
+ * de la vista cierran al peso con los del pivot. Antes cortaban por la
+ * CARTERA del cliente y pasaban dos cosas feas — un vendedor se llevaba
+ * ventas emitidas con otro código sobre sus mismos clientes, y un cliente que
+ * caía en la cartera de dos vendedores sumaba en las dos pantallas (la suma
+ * de todas las vistas daba MÁS que el total de la empresa).
+ *
+ * El eje comprobante solo no alcanza: cuando alguien se va, su venta vieja
+ * tiene que seguir contando para el que heredó su cartera. Eso es lo que se
+ * carga acá, explícito, en vez de adivinarse por zona.
+ *
+ * Es código→código y no usuario→usuario porque el antecesor normalmente ya no
+ * tiene usuario en la app: existe sólo como código en el maestro Vendedores
+ * de Magnus (por eso el catálogo incluye a los dados de baja).
+ *
+ * REGLA DE ORO: un código lo hereda UNO SOLO (unique en la base). Es lo que
+ * garantiza que ningún peso se cuente dos veces. Si el alta devuelve 409, es
+ * eso: hay que sacárselo al otro primero.
+ */
+type Antecesor = {
+  id: number;
+  sucesorCodigo: number;
+  antecesorCodigo: number;
+  nota: string | null;
+};
+
+function PanelAntecesores({
+  vendedores,
+  vendedoresError,
+}: {
+  vendedores: Vendedor[];
+  vendedoresError: boolean;
+}) {
+  const [items, setItems] = useState<Antecesor[]>([]);
+  const [cargando, setCargando] = useState(true);
+  const [sucesor, setSucesor] = useState("");
+  const [antecesor, setAntecesor] = useState("");
+  const [nota, setNota] = useState("");
+  const [guardando, setGuardando] = useState(false);
+
+  async function cargar() {
+    setCargando(true);
+    try {
+      const r = await fetch("/api/admin/usuarios/antecesores");
+      const d = await r.json();
+      if (!r.ok) throw new Error(d?.error ?? "Error");
+      setItems(d.items ?? []);
+    } catch (e: any) {
+      toast.error(e?.message ?? "No se pudo cargar la sucesión de vendedores");
+    } finally {
+      setCargando(false);
+    }
+  }
+
+  useEffect(() => {
+    cargar();
+  }, []);
+
+  const nombreDe = (codigo: number) =>
+    vendedores.find((v) => v.codigo === codigo)?.nombre ?? null;
+
+  // Se muestra el nombre apenas el número tipeado matchea el catálogo: es la
+  // única forma de darse cuenta de que uno se equivocó de código antes de
+  // guardar (hay dos maestros con los mismos rangos, ver CeldaVendedor).
+  const eco = (texto: string) => {
+    const n = Number(texto);
+    if (!texto.trim() || !Number.isInteger(n)) return null;
+    if (vendedoresError) return null;
+    return nombreDe(n) ?? "no está en el maestro de Magnus";
+  };
+
+  async function agregar() {
+    const s = Number(sucesor);
+    const a = Number(antecesor);
+    if (!Number.isInteger(s) || !Number.isInteger(a)) {
+      toast.error("Faltan los dos códigos");
+      return;
+    }
+    setGuardando(true);
+    try {
+      const r = await fetch("/api/admin/usuarios/antecesores", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sucesorCodigo: s,
+          antecesorCodigo: a,
+          nota: nota.trim() || null,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d?.error ?? "Error");
+      toast.success("Sucesión guardada");
+      setSucesor("");
+      setAntecesor("");
+      setNota("");
+      await cargar();
+    } catch (e: any) {
+      toast.error(e?.message ?? "No se pudo guardar");
+    } finally {
+      setGuardando(false);
+    }
+  }
+
+  async function borrar(id: number) {
+    try {
+      const r = await fetch(`/api/admin/usuarios/antecesores?id=${id}`, {
+        method: "DELETE",
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d?.error ?? "Error");
+      toast.success("Sucesión eliminada");
+      await cargar();
+    } catch (e: any) {
+      toast.error(e?.message ?? "No se pudo borrar");
+    }
+  }
+
+  return (
+    <div className="rounded-lg ring-1 ring-foreground/10 p-4 flex flex-col gap-3">
+      <div>
+        <h2 className="text-base font-medium">Sucesión de vendedores</h2>
+        <p className="text-sm text-muted-foreground">
+          Cuando un vendedor se va o cambia de área, acá se dice quién se queda con su
+          cartera. El sucesor pasa a ver, en Ventas y en Faltantes, también lo que vendió
+          el antecesor — sin eso esa venta queda sin dueño y sólo aparece en el total de
+          la empresa.
+        </p>
+        <p className="text-xs text-muted-foreground mt-1">
+          Un código lo puede heredar una sola persona: si dos lo heredaran, esa venta se
+          contaría dos veces y la suma de las vistas dejaría de dar el total de la empresa.
+        </p>
+      </div>
+
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-col gap-1">
+          <Label className="text-xs">Se queda con la cartera</Label>
+          <Input
+            className="w-32"
+            inputMode="numeric"
+            placeholder="código"
+            value={sucesor}
+            onChange={(e) => setSucesor(e.target.value)}
+          />
+          <span className="text-[11px] text-muted-foreground h-4">{eco(sucesor)}</span>
+        </div>
+        <ArrowRight className="size-4 mb-7 text-muted-foreground rotate-180" />
+        <div className="flex flex-col gap-1">
+          <Label className="text-xs">Vendedor que se fue</Label>
+          <Input
+            className="w-32"
+            inputMode="numeric"
+            placeholder="código"
+            value={antecesor}
+            onChange={(e) => setAntecesor(e.target.value)}
+          />
+          <span className="text-[11px] text-muted-foreground h-4">{eco(antecesor)}</span>
+        </div>
+        <div className="flex flex-col gap-1 grow min-w-48">
+          <Label className="text-xs">Nota (opcional)</Label>
+          <Input
+            placeholder="se fue 04/2026, pasó a compras…"
+            value={nota}
+            onChange={(e) => setNota(e.target.value)}
+          />
+          <span className="h-4" />
+        </div>
+        <Button size="sm" disabled={guardando} onClick={agregar} className="mb-4">
+          {guardando ? <Loader2 className="animate-spin" /> : null}
+          Agregar
+        </Button>
+      </div>
+
+      {cargando ? (
+        <p className="text-sm text-muted-foreground">Cargando…</p>
+      ) : items.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          Sin sucesiones cargadas: cada vendedor ve sólo lo que facturó con su propio
+          código.
+        </p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-foreground/10 text-sm">
+          {items.map((it) => (
+            <li key={it.id} className="flex items-center gap-2 py-2">
+              <span className="font-medium">
+                {nombreDe(it.sucesorCodigo) ?? `(${it.sucesorCodigo})`}
+              </span>
+              <span className="text-muted-foreground text-xs">
+                {it.sucesorCodigo}
+              </span>
+              <span className="text-muted-foreground">hereda</span>
+              <span className="font-medium">
+                {nombreDe(it.antecesorCodigo) ?? `(${it.antecesorCodigo})`}
+              </span>
+              <span className="text-muted-foreground text-xs">
+                {it.antecesorCodigo}
+              </span>
+              {it.nota && (
+                <span className="text-xs text-muted-foreground truncate">
+                  · {it.nota}
+                </span>
+              )}
+              <Button
+                variant="ghost"
+                size="xs"
+                className="ml-auto"
+                onClick={() => borrar(it.id)}
+                title="Sacar la sucesión: el antecesor vuelve a quedar sin dueño"
+              >
+                <Trash2 />
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

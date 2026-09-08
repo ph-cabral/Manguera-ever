@@ -24,7 +24,8 @@ import re
 import time
 from db import get_connection
 from clientes import fetch_cliente
-from cartera import SQL_JOIN_CARTERA, params_cartera, cliente_es_de_vendedor
+from cartera import cliente_es_de_vendedor
+from vendedores import MARCA as MARCA_VENDEDOR, aplicar as recortar_vendedor
 from subempresas import filas_dos, sql_prueba, unir
 
 BASE_DATE = date(1800, 12, 28)  # Magnus guarda fechas como días desde esta base
@@ -382,7 +383,7 @@ def _bloqueado(cod_cliente: int, anio_anterior: int, anio_actual: int) -> dict:
 # Rankings del pie de /ventas/vendedor — top clientes ($) y top líneas
 # (unidades) en un rango de meses. Ambos toman SOLO los clientes que ya
 # pasan el mismo filtro de acceso por vendedor que usa el buscador de
-# clientes (fetch_clientes_search/SQL_CLIENTES_SEARCH_POR_VENDEDOR) — un
+# clientes (clientes.fetch_clientes_search, recorte por cartera) — un
 # no-admin nunca ve acá un cliente que no es suyo. Admin (`vendedor=None`)
 # ve el ranking de toda la empresa.
 #
@@ -564,23 +565,15 @@ def _ventana(expr: str) -> str:
     return f"SUM(CASE WHEN vc.FecMovim BETWEEN ? AND ? THEN ({expr}) ELSE 0 END)"
 
 
-SQL_TOP_CLIENTES_VENDEDOR = _solo_venta(f"""
-SELECT
-    c.CodCliente AS CodCliente,
-    LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
-    {_ventana(_MONTO_NETO)} AS MontoNeto,
-    {_ventana(_MONTO_NETO)} AS MontoMes
-FROM MAGNUS_SITD.dbo.Clientes c
-""" + SQL_JOIN_CARTERA + f"""
-JOIN Ven_CompCabecera vc ON vc.CodCliente = c.CodCliente
-JOIN Ven_CompRenglon r   ON r.NroMovVenta = vc.NroMovVenta
-JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
-WHERE cc.EvitaInformesYListados <> 1
-  AND vc.FecMovim BETWEEN ? AND ?
-GROUP BY c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre))
-""")
-
-SQL_TOP_CLIENTES_TODOS = _solo_venta(f"""
+# UNA sola consulta para admin y para vendedor (2026-09-08): el recorte por
+# vendedor es una línea de WHERE sobre `vc.vendedor` que se inyecta en
+# MARCA_VENDEDOR al ejecutar (ver vendedores.py). Antes eran dos constantes
+# gemelas — una con el JOIN de cartera y otra sin él — que había que
+# mantener en sincronía a mano.
+#
+# Importante para el orden de los `?`: la marca NO consume parámetros, así
+# que la lista de params es la misma con y sin vendedor.
+SQL_TOP_CLIENTES = _solo_venta(f"""
 SELECT
     c.CodCliente AS CodCliente,
     LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
@@ -592,6 +585,7 @@ JOIN Ven_CompRenglon r   ON r.NroMovVenta = vc.NroMovVenta
 JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
 WHERE cc.EvitaInformesYListados <> 1
   AND vc.FecMovim BETWEEN ? AND ?
+{MARCA_VENDEDOR}
 GROUP BY c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre))
 """)
 
@@ -600,8 +594,7 @@ GROUP BY c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre))
 # hacerlo sobre la SUMA de las dos — un cliente puede quedar negativo en una y
 # positivo en el total — y ningún ORDER BY de una consulta sola sirve para el
 # ranking final.
-SQL_TOP_CLIENTES_VENDEDOR_PRUEBA = _prueba(SQL_TOP_CLIENTES_VENDEDOR)
-SQL_TOP_CLIENTES_TODOS_PRUEBA = _prueba(SQL_TOP_CLIENTES_TODOS)
+SQL_TOP_CLIENTES_PRUEBA = _prueba(SQL_TOP_CLIENTES)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -611,7 +604,7 @@ SQL_TOP_CLIENTES_TODOS_PRUEBA = _prueba(SQL_TOP_CLIENTES_TODOS)
 # (comprobantes 24/60/25/23/62): no tienen renglón de artículo, así que no
 # aparecen en ninguna de las consultas de arriba y el bruto de los rankings
 # queda por encima de la venta real. Se traen aparte, con el mismo rango y el
-# mismo recorte por cartera, y viajan en el payload como `ajuste`/`ajusteMes`
+# mismo recorte por vendedor, y viajan en el payload como `ajuste`/`ajusteMes`
 # para que el pie de la tabla pueda mostrar bruto → ajuste → neto.
 #
 # NO se prorratean adentro de las filas: la NC es de la empresa, no de un
@@ -675,10 +668,16 @@ def fetch_top_clientes(
     2026-08-18, "acá solo dejamos ver $ gastado por ese cliente"). Las
     unidades ahora viven en fetch_top_lineas.
 
-    `vendedor`: mismo criterio de acceso que fetch_clientes_search — si se
-    pasa, el ranking sale SOLO de la cartera de ese vendedor (zona declarada
-    o historial de facturación; ver cartera.py, el JOIN va en la MISMA
-    consulta). `None` (admin) no filtra, ranking de toda la empresa.
+    `vendedor`: si se pasa, el ranking sale SOLO de los comprobantes cuyo
+    `Ven_CompCabecera.vendedor` es el suyo o el de alguno de sus antecesores
+    (eje comprobante, ver vendedores.py — es el mismo eje del pivot
+    `Ventas_Debitos_Creditos`). `None` (admin) no filtra, ranking de toda la
+    empresa.
+
+    Hasta 2026-09-08 el corte era por CARTERA del cliente y por eso un
+    vendedor se llevaba venta emitida con otro código y dos vendedores
+    podían sumar al mismo cliente. La cartera quedó sólo para permisos
+    (buscador y faltantes, ver cartera.py).
 
     `desde`/`hasta` ("YYYY-MM"): rango de meses, AMBOS inclusive y
     completos. Default (2026-09-04): meses TRANSCURRIDOS del año en curso,
@@ -703,20 +702,17 @@ def fetch_top_clientes(
             return cacheado[1]
 
     # Orden de los parámetros = orden en que aparecen los "?" en el texto de
-    # la query: primero los dos CASE del SELECT (acumulado, mes en curso),
-    # después el JOIN de cartera, y al final el WHERE.
+    # la query: primero los dos CASE del SELECT (acumulado, mes en curso) y
+    # al final el WHERE. El recorte por vendedor no consume parámetros.
     params_ventanas = dias_acum + dias_mes
 
     conn = get_connection("EVERWEAR")
     try:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
-        if vendedor is None:
-            sql_m, sql_p = SQL_TOP_CLIENTES_TODOS, SQL_TOP_CLIENTES_TODOS_PRUEBA
-            params = params_ventanas + dias_total
-        else:
-            sql_m, sql_p = SQL_TOP_CLIENTES_VENDEDOR, SQL_TOP_CLIENTES_VENDEDOR_PRUEBA
-            params = params_ventanas + params_cartera(vendedor) + dias_total
+        sql_m = recortar_vendedor(SQL_TOP_CLIENTES, vendedor)
+        sql_p = recortar_vendedor(SQL_TOP_CLIENTES_PRUEBA, vendedor)
+        params = params_ventanas + dias_total
 
         # Las dos sub-empresas se suman por CodCliente (col. 0) antes de
         # filtrar y ordenar — ver el bloque de subempresas arriba.
@@ -827,27 +823,7 @@ def fetch_top_clientes(
 # Stk_Nivel1, ej. Nivel1 = 0) no se pierde, cae en SIN_LINEA. Por eso el
 # "> 0" va en Python y no en un HAVING — hay que consolidar el grupo NULL
 # con el grupo '' antes de decidir si la línea entra.
-SQL_TOP_LINEAS_VENDEDOR = _solo_venta(f"""
-SELECT
-    LTRIM(RTRIM(n1.Detalle)) AS Linea,
-    {_ventana(_UNIDADES_NETAS)} AS UnidadesNetas,
-    {_ventana(_UNIDADES_NETAS)} AS UnidadesMes,
-    {_ventana(_MONTO_NETO)} AS MontoNeto,
-    {_ventana(_MONTO_NETO)} AS MontoMes
-FROM MAGNUS_SITD.dbo.Clientes c
-""" + SQL_JOIN_CARTERA + """
-JOIN Ven_CompCabecera vc ON vc.CodCliente = c.CodCliente
-JOIN Ven_CompRenglon r   ON r.NroMovVenta = vc.NroMovVenta
-JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
-LEFT JOIN StkFer_Articulos  s  ON s.CodArticulo    = r.CodArticu
-LEFT JOIN StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
-LEFT JOIN Stk_Nivel1        n1 ON n1.Nivel1         = ap.Nivel1
-WHERE cc.EvitaInformesYListados <> 1
-  AND vc.FecMovim BETWEEN ? AND ?
-GROUP BY LTRIM(RTRIM(n1.Detalle))
-""")
-
-SQL_TOP_LINEAS_TODOS = _solo_venta(f"""
+SQL_TOP_LINEAS = _solo_venta(f"""
 SELECT
     LTRIM(RTRIM(n1.Detalle)) AS Linea,
     {_ventana(_UNIDADES_NETAS)} AS UnidadesNetas,
@@ -862,11 +838,11 @@ LEFT JOIN StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
 LEFT JOIN Stk_Nivel1        n1 ON n1.Nivel1         = ap.Nivel1
 WHERE cc.EvitaInformesYListados <> 1
   AND vc.FecMovim BETWEEN ? AND ?
+""" + MARCA_VENDEDOR + """
 GROUP BY LTRIM(RTRIM(n1.Detalle))
 """)
 
-SQL_TOP_LINEAS_VENDEDOR_PRUEBA = _prueba(SQL_TOP_LINEAS_VENDEDOR)
-SQL_TOP_LINEAS_TODOS_PRUEBA = _prueba(SQL_TOP_LINEAS_TODOS)
+SQL_TOP_LINEAS_PRUEBA = _prueba(SQL_TOP_LINEAS)
 
 
 def fetch_top_lineas(
@@ -903,19 +879,17 @@ def fetch_top_lineas(
             return cacheado[1]
 
     # Cuatro CASE en el SELECT (unidades acum/mes, monto acum/mes) antes del
-    # JOIN de cartera y del WHERE — el orden de los "?" manda.
+    # WHERE — el orden de los "?" manda. El recorte por vendedor no consume
+    # parámetros, así que la lista es la misma con y sin vendedor.
     params_ventanas = dias_acum + dias_mes + dias_acum + dias_mes
 
     conn = get_connection("EVERWEAR")
     try:
         cur = conn.cursor()
         cur.execute("SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
-        if vendedor is None:
-            sql_m, sql_p = SQL_TOP_LINEAS_TODOS, SQL_TOP_LINEAS_TODOS_PRUEBA
-            params = params_ventanas + dias_total
-        else:
-            sql_m, sql_p = SQL_TOP_LINEAS_VENDEDOR, SQL_TOP_LINEAS_VENDEDOR_PRUEBA
-            params = params_ventanas + params_cartera(vendedor) + dias_total
+        sql_m = recortar_vendedor(SQL_TOP_LINEAS, vendedor)
+        sql_p = recortar_vendedor(SQL_TOP_LINEAS_PRUEBA, vendedor)
+        params = params_ventanas + dias_total
 
         # NULL y '' son grupos distintos para SQL pero la misma "sin línea"
         # acá, así que se consolidan antes de filtrar/ordenar. Las filas de las
@@ -1029,26 +1003,7 @@ _TOP_CLIENTES_LINEA_TTL_SEG = 15 * 60  # 15 minutos
 # WHERE que las filtraría. Comparar enteros no puede fallar así.
 #
 # El CASE va en una subconsulta y el GROUP BY afuera, para no repetirlo.
-_SUB_CLIENTES_LINEA_VENDEDOR_TPL = _solo_venta("""
-SELECT
-    c.CodCliente AS CodCliente,
-    LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
-    {case_anio_mes} AS AnioMes,
-    CASE cc.DebitoCredito WHEN 1 THEN r.Cantidad ELSE r.Cantidad * -1 END AS Cant,
-    CASE cc.DebitoCredito WHEN 1 THEN (r.Cantidad * r.PrecioVenta) ELSE (r.Cantidad * r.PrecioVenta) * -1 END AS Monto
-FROM MAGNUS_SITD.dbo.Clientes c
-""" + SQL_JOIN_CARTERA + """
-JOIN Ven_CompCabecera vc ON vc.CodCliente = c.CodCliente
-JOIN Ven_CompRenglon r   ON r.NroMovVenta = vc.NroMovVenta
-JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
-LEFT JOIN StkFer_Articulos  s  ON s.CodArticulo    = r.CodArticu
-LEFT JOIN StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
-WHERE cc.EvitaInformesYListados <> 1
-  AND vc.FecMovim BETWEEN ? AND ?
-  AND {linea_cond}
-""")
-
-_SUB_CLIENTES_LINEA_TODOS_TPL = _solo_venta("""
+_SUB_CLIENTES_LINEA_TPL = _solo_venta("""
 SELECT
     c.CodCliente AS CodCliente,
     LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
@@ -1064,6 +1019,7 @@ LEFT JOIN StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
 WHERE cc.EvitaInformesYListados <> 1
   AND vc.FecMovim BETWEEN ? AND ?
   AND {linea_cond}
+""" + MARCA_VENDEDOR + """
 """)
 
 # ── Variante rápida: arrancar por los ARTÍCULOS de la línea ────────────────
@@ -1097,7 +1053,7 @@ _SUB_ART_DE_LINEA = """
     WHERE {linea_cond}
 """
 
-_SUB_CLIENTES_LINEA_TODOS_ART_TPL = _solo_venta("""
+_SUB_CLIENTES_LINEA_ART_TPL = _solo_venta("""
 SELECT
     c.CodCliente AS CodCliente,
     LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
@@ -1112,28 +1068,7 @@ JOIN MAGNUS_SITD.dbo.Clientes c ON c.CodCliente   = vc.CodCliente
 WHERE cc.EvitaInformesYListados <> 1
   AND r.FecMovim  BETWEEN ? AND ?
   AND vc.FecMovim BETWEEN ? AND ?
-""")
-
-# OJO con el orden de los parámetros: acá `Clientes` NO es la tabla que
-# arranca la query, así que los dos parámetros de SQL_JOIN_CARTERA NO son los
-# primeros (como sí lo son en el resto de las queries de este módulo). Van
-# después del nombre de la línea. Ver params en fetch_clientes_por_linea.
-_SUB_CLIENTES_LINEA_VENDEDOR_ART_TPL = _solo_venta("""
-SELECT
-    c.CodCliente AS CodCliente,
-    LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
-    {case_anio_mes} AS AnioMes,
-    CASE cc.DebitoCredito WHEN 1 THEN r.Cantidad ELSE r.Cantidad * -1 END AS Cant,
-    CASE cc.DebitoCredito WHEN 1 THEN (r.Cantidad * r.PrecioVenta) ELSE (r.Cantidad * r.PrecioVenta) * -1 END AS Monto
-FROM (""" + _SUB_ART_DE_LINEA + """) a
-JOIN Ven_CompRenglon r          ON r.CodArticu    = a.CodArticulo
-JOIN Ven_CompCabecera vc        ON vc.NroMovVenta = r.NroMovVenta
-JOIN Ven_CodCom cc              ON cc.CompCodigo  = vc.CompCodigo
-JOIN MAGNUS_SITD.dbo.Clientes c ON c.CodCliente   = vc.CodCliente
-""" + SQL_JOIN_CARTERA + """
-WHERE cc.EvitaInformesYListados <> 1
-  AND r.FecMovim  BETWEEN ? AND ?
-  AND vc.FecMovim BETWEEN ? AND ?
+""" + MARCA_VENDEDOR + """
 """)
 
 
@@ -1188,8 +1123,8 @@ def fetch_clientes_por_linea(
     (Stk_Nivel1.Detalle trimeado) — o SIN_LINEA, caso especial que no
     compara nombre sino que filtra los artículos sin match en el catálogo.
 
-    `vendedor`: mismo criterio de acceso que fetch_top_clientes — si se
-    pasa, solo clientes de la cartera de ese vendedor.
+    `vendedor`: mismo criterio que fetch_top_clientes — si se pasa, sólo
+    los comprobantes de ese vendedor y sus antecesores (ver vendedores.py).
 
     Orden: por monto total de los 2 años, de mayor a menor (mismo criterio
     de "los que más gastaron" que tenía la versión anterior)."""
@@ -1222,24 +1157,24 @@ def fetch_clientes_por_linea(
         if es_sin_linea:
             # Complemento del catálogo: hay que recorrer por comprobante, no
             # se puede resolver como "los artículos de la línea".
-            tpl = (_SUB_CLIENTES_LINEA_TODOS_TPL if vendedor is None
-                   else _SUB_CLIENTES_LINEA_VENDEDOR_TPL)
-            sub = tpl.format(case_anio_mes=case_am, linea_cond=linea_cond)
+            sub = _SUB_CLIENTES_LINEA_TPL.format(
+                case_anio_mes=case_am, linea_cond=linea_cond)
             params = (dia_desde, dia_hasta)
-            if vendedor is not None:
-                params = params_cartera(vendedor) + params
         else:
             # Forma rápida: arranca por los artículos de la línea y entra a
-            # Ven_CompRenglon por seek. Orden de parámetros: línea, [cartera],
-            # fechas del renglón (con margen), fechas de la cabecera.
-            tpl = (_SUB_CLIENTES_LINEA_TODOS_ART_TPL if vendedor is None
-                   else _SUB_CLIENTES_LINEA_VENDEDOR_ART_TPL)
-            sub = tpl.format(case_anio_mes=case_am, linea_cond=linea_cond)
+            # Ven_CompRenglon por seek. Orden de parámetros: línea, fechas del
+            # renglón (con margen), fechas de la cabecera — el recorte por
+            # vendedor no consume ninguno.
+            sub = _SUB_CLIENTES_LINEA_ART_TPL.format(
+                case_anio_mes=case_am, linea_cond=linea_cond)
             m = _MARGEN_FECHA_RENGLON
-            params = (linea_norm,)
-            if vendedor is not None:
-                params += params_cartera(vendedor)
-            params += (dia_desde - m, dia_hasta + m, dia_desde, dia_hasta)
+            params = (linea_norm,
+                      dia_desde - m, dia_hasta + m, dia_desde, dia_hasta)
+        # El recorte por vendedor se inyecta ANTES de armar la gemela: es una
+        # línea de WHERE sobre `vc.vendedor`, sin tablas `Ven_*`, así que
+        # sobrevive intacta la transformación a PRUEBA.
+        sub = recortar_vendedor(sub, vendedor)
+
         # La gemela de PRUEBA se arma sobre la subconsulta YA formateada: la
         # transformación es textual y ni el CASE de año/mes ni la condición de
         # línea tocan tablas `Ven_*`. Mismos parámetros para las dos.

@@ -59,7 +59,7 @@ import os
 import time
 from datetime import date, timedelta
 
-from cartera import SQL_JOIN_CARTERA, params_cartera
+from vendedores import MARCA as MARCA_VENDEDOR, aplicar as recortar_vendedor
 from db import get_connection
 from subempresas import (COMPROBANTES_AJUSTE_PRUEBA, filas_dos, sql_prueba,
                          unir)
@@ -375,12 +375,17 @@ def bonificacion_por_vendedor(desde: str | None = None, hasta: str | None = None
 # comprobante — es para el ranking de vendedores, que se arma con ese eje.
 _AJUSTE_ROW = "CASE cc.DebitoCredito WHEN 1 THEN rd.Importe ELSE rd.Importe * -1 END"
 
-_WHERE_AJUSTE = """
+# La marca de vendedor (vendedores.MARCA) se reemplaza al ejecutar por
+# `AND cab.vendedor IN (...)` — el vendedor del COMPROBANTE, que desde
+# 2026-09-08 es el eje de toda la vista. Con vendedor None se borra sola y
+# queda la consulta de "toda la empresa": una sola constante para los dos
+# casos, y como la marca no consume `?`, la lista de parámetros no cambia.
+_WHERE_AJUSTE = ("""
 WHERE cc.CompCodigo IN (%s)
   AND cc.EvitaInformesYListados <> 1
   AND ISNULL(cn.TotalizaImpEn, 0) <> 6
   AND cab.FecMovim BETWEEN ? AND ?
-""" % _IN_COMPROBANTES
+""" % _IN_COMPROBANTES) + MARCA_VENDEDOR + "\n"
 
 _SELECT_AJUSTE = f"""
 SELECT
@@ -395,17 +400,7 @@ JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
 LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
 """ + _WHERE_AJUSTE
 
-_SQL_AJUSTE_VENDEDOR = _SELECT_AJUSTE + """
-FROM MAGNUS_SITD.dbo.Clientes c
-""" + SQL_JOIN_CARTERA + """
-JOIN Ven_CompCabecera cab ON cab.CodCliente  = c.CodCliente
-JOIN Ven_RenDebCre    rd  ON rd.NroMovVenta  = cab.NroMovVenta
-JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
-LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
-""" + _WHERE_AJUSTE
-
 _SQL_AJUSTE_TODOS_PRUEBA = _prueba(_SQL_AJUSTE_TODOS)
-_SQL_AJUSTE_VENDEDOR_PRUEBA = _prueba(_SQL_AJUSTE_VENDEDOR)
 
 
 def ajuste_ventanas(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
@@ -427,14 +422,11 @@ def ajuste_ventanas(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
     if hit is not None:
         return hit
 
-    # Orden de los "?": los dos CASE del SELECT, después el JOIN de cartera
-    # (si hay) y al final el WHERE. Mismo criterio que ventas.py.
-    if vendedor is not None:
-        sql, sql_p = _SQL_AJUSTE_VENDEDOR, _SQL_AJUSTE_VENDEDOR_PRUEBA
-        params = dias_acum + dias_mes + params_cartera(vendedor) + dias_total
-    else:
-        sql, sql_p = _SQL_AJUSTE_TODOS, _SQL_AJUSTE_TODOS_PRUEBA
-        params = dias_acum + dias_mes + dias_total
+    # Orden de los "?": los dos CASE del SELECT y al final el WHERE. El
+    # recorte por vendedor no consume parámetros. Mismo criterio que ventas.py.
+    sql = recortar_vendedor(_SQL_AJUSTE_TODOS, vendedor, "cab")
+    sql_p = recortar_vendedor(_SQL_AJUSTE_TODOS_PRUEBA, vendedor, "cab")
+    params = dias_acum + dias_mes + dias_total
 
     conn, cur = _conn()
     try:
@@ -463,9 +455,10 @@ def ajuste_ventanas(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
 # Los cortes por LÍNEA siguen en bruto a propósito: repartir una NC de
 # empresa entre líneas sería un supuesto.
 #
-# Mismo criterio de vendedor que `ajuste_ventanas`: la CARTERA del cliente
-# (no `cab.Vendedor`), porque es el eje con el que se arma el bruto al que
-# se le suma.
+# Mismo criterio de vendedor que `ajuste_ventanas`: `cab.vendedor` (más los
+# códigos de sus antecesores), porque es el eje con el que se arma el bruto
+# al que se le suma. Hasta 2026-09-08 era la CARTERA del cliente, junto con
+# el resto de la vista.
 _SELECT_AJUSTE_CLI = f"""
 SELECT
     cab.CodCliente AS CodCliente,
@@ -482,17 +475,7 @@ JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
 LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
 """ + _WHERE_AJUSTE + _GROUP_CLI
 
-_SQL_AJUSTE_CLI_VENDEDOR = _SELECT_AJUSTE_CLI + """
-FROM MAGNUS_SITD.dbo.Clientes c
-""" + SQL_JOIN_CARTERA + """
-JOIN Ven_CompCabecera cab ON cab.CodCliente  = c.CodCliente
-JOIN Ven_RenDebCre    rd  ON rd.NroMovVenta  = cab.NroMovVenta
-JOIN Ven_CodCom       cc  ON cc.CompCodigo   = cab.CompCodigo
-LEFT JOIN Ven_ConcDebCre cn ON cn.CodConcepto = rd.CodConcepto
-""" + _WHERE_AJUSTE + _GROUP_CLI
-
 _SQL_AJUSTE_CLI_TODOS_PRUEBA = _prueba(_SQL_AJUSTE_CLI_TODOS)
-_SQL_AJUSTE_CLI_VENDEDOR_PRUEBA = _prueba(_SQL_AJUSTE_CLI_VENDEDOR)
 
 
 def ajuste_por_cliente(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
@@ -502,19 +485,16 @@ def ajuste_por_cliente(dias_acum: tuple[int, int], dias_mes: tuple[int, int],
     """{CodCliente: (ajuste_acumulado, ajuste_mes_en_curso)} de las dos
     ventanas de /ventas/vendedor, ya con signo (negativo = bonificación).
 
-    Mismos rangos y mismo recorte por cartera que `ajuste_ventanas`, de una
+    Mismos rangos y mismo recorte por vendedor que `ajuste_ventanas`, de una
     sola pasada por sub-empresa. Cachea 15 min como el resto del módulo."""
     key = ("aj-cli", dias_acum, dias_mes, vendedor)
     hit = _cacheado(key, forzar)
     if hit is not None:
         return hit
 
-    if vendedor is not None:
-        sql, sql_p = _SQL_AJUSTE_CLI_VENDEDOR, _SQL_AJUSTE_CLI_VENDEDOR_PRUEBA
-        params = dias_acum + dias_mes + params_cartera(vendedor) + dias_total
-    else:
-        sql, sql_p = _SQL_AJUSTE_CLI_TODOS, _SQL_AJUSTE_CLI_TODOS_PRUEBA
-        params = dias_acum + dias_mes + dias_total
+    sql = recortar_vendedor(_SQL_AJUSTE_CLI_TODOS, vendedor, "cab")
+    sql_p = recortar_vendedor(_SQL_AJUSTE_CLI_TODOS_PRUEBA, vendedor, "cab")
+    params = dias_acum + dias_mes + dias_total
 
     conn, cur = _conn()
     try:

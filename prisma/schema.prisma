@@ -529,6 +529,32 @@ model usuario {
 
 // Mapa editable: qué módulos de la app habilita cada sector.
 // `modulos` es un array JSON de claves de módulo (ver lib/auth/modules.ts).
+// Sucesión de vendedores: qué códigos de Magnus hereda un vendedor
+// (2026-09-08, ver sql/vendedor_antecesor.sql).
+//
+// /ventas/vendedor, /ventas/bulones y /ventas/faltantes cortan por
+// Ven_CompCabecera.vendedor (eje comprobante, el mismo del pivot
+// Ventas_Debitos_Creditos). Esta tabla dice qué OTROS códigos suma cada
+// vendedor: los de la gente que se fue o cambió de área y cuya cartera
+// quedó a su cargo.
+//
+// antecesorCodigo es UNIQUE a propósito: un código lo hereda UNO SOLO, y
+// eso es lo que garantiza que ningún peso se cuente dos veces y que la suma
+// de todas las vistas de vendedor dé el total exacto de la empresa.
+//
+// Es código->código y no usuario->usuario porque el antecesor normalmente
+// ya no tiene usuario en la app (existe sólo en MAGNUS_SITD.dbo.Vendedores).
+model vendedor_antecesor {
+  id              Int      @id @default(autoincrement())
+  sucesorCodigo   Int      @map("sucesor_codigo")
+  antecesorCodigo Int      @unique @map("antecesor_codigo")
+  nota            String?
+  creado_en       DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([sucesorCodigo])
+  @@schema("everwear")
+}
+
 model sector_permiso {
   id        Int      @id @default(autoincrement())
   sector    String   @unique @db.VarChar(80)

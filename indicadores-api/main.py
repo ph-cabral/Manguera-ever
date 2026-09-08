@@ -61,6 +61,7 @@ from finanza import (
 )
 from clientes import fetch_cliente, fetch_clientes_search
 from cartera import fetch_cartera_codigos
+from vendedores import codigos_de, invalidar_cache as invalidar_cache_vendedores
 from mesa_control import (
     fetch_mesa_control, fetch_mesa_control_diag,
     fetch_mesa_control_sp_definicion, fetch_mesa_control_tablas_diag,
@@ -981,16 +982,36 @@ def ventas_vendedor_clientes_por_linea(
 def ventas_vendedor_cartera(
     vendedor: int = Query(..., description="VendedorCodigo (maestro Vendedores)"),
 ):
-    """CodCliente de la cartera de un vendedor (zona ∪ historial) — mismo
-    criterio que el resto de /ventas/vendedor, definido una sola vez en
-    cartera.py. Lo usa /ventas/faltantes para recortar los faltantes a los
-    clientes del vendedor logueado (el recorte no se puede hacer con el JOIN
-    de cartera porque esos renglones vienen de otra consulta)."""
+    """CodCliente de la cartera de un vendedor (zona ∪ historial), incluida
+    la de sus ANTECESORES — ver cartera.py y vendedores.py. Lo usa
+    /ventas/faltantes para recortar los faltantes a los clientes del vendedor
+    logueado (el recorte no se puede hacer con el JOIN de cartera porque esos
+    renglones vienen de otra consulta).
+
+    Ojo: acá la cartera sigue siendo el criterio, y está bien — un faltante es
+    un pedido PENDIENTE, no una venta facturada, así que no tiene un
+    "vendedor del comprobante" con el que cortarlo. Lo que cambió el
+    2026-09-08 es que la cartera se resuelve sobre todos los códigos del
+    vendedor, así el que heredó una cartera ve también esos faltantes."""
     try:
         clientes = fetch_cartera_codigos(vendedor)
-        return {"vendedor": vendedor, "total": len(clientes), "clientes": clientes}
+        return {
+            "vendedor": vendedor,
+            "codigos": list(codigos_de(vendedor)),
+            "total": len(clientes),
+            "clientes": clientes,
+        }
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
+@app.post("/ventas/vendedor/antecesores/invalidar")
+def ventas_vendedor_antecesores_invalidar():
+    """Tira abajo el cache del mapeo de sucesión (TTL 5', ver vendedores.py).
+    Lo llama /admin/usuarios al dar de alta o borrar un antecesor, para que el
+    cambio se vea en la vista al toque en vez de esperar el TTL."""
+    invalidar_cache_vendedores()
+    return {"ok": True}
 
 
 # ── /ventas/bulones ────────────────────────────────────────────────────────

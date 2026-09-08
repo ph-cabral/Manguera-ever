@@ -42,7 +42,8 @@ import os
 import time
 
 from db import get_connection
-from cartera import SQL_JOIN_CARTERA, params_cartera
+from vendedores import (MARCA as MARCA_VENDEDOR, aplicar as recortar_vendedor,
+                        dueno_de)
 from subempresas import filas_dos, sql_prueba, unir
 from ventas import (
     BASE_DATE,
@@ -112,18 +113,6 @@ def _nombre_vendedor(codigo, nombre):
 _JOIN_ART = """
 JOIN StkFer_Articulos  s  ON s.CodArticulo    = r.CodArticu
 JOIN StkFer_ArtParamet ap ON ap.ArticuloPatron = s.ArticuloPatron
-"""
-
-# Cartera del vendedor — se antepone a Ven_CompCabecera cuando hay que
-# acotar por vendedor (no-admin). Consume DOS parámetros (ver cartera.py),
-# que por venir del JOIN son siempre los PRIMEROS de la query: usar
-# params_cartera(vendedor) + (resto...).
-_JOIN_VENDEDOR = """
-FROM MAGNUS_SITD.dbo.Clientes c
-""" + SQL_JOIN_CARTERA + """
-JOIN Ven_CompCabecera vc ON vc.CodCliente = c.CodCliente
-JOIN Ven_CompRenglon r   ON r.NroMovVenta = vc.NroMovVenta
-JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
 """
 
 # Para AGRUPAR por vendedor (ranking): acá el vendedor de cada venta sale
@@ -202,18 +191,21 @@ def fetch_top_clientes(vendedor: int | None = None, limit: int = 1_000_000,
     if hit is not None:
         return hit
 
-    joins = _JOIN_VENDEDOR if vendedor is not None else _JOIN_CLIENTE
-    where = f"WHERE {_COMP} AND vc.FecMovim BETWEEN ? AND ?"
+    # Un solo par joins/where para admin y para vendedor: el recorte es la
+    # marca de vendedores.py, que se reemplaza más abajo por
+    # `AND vc.vendedor IN (...)` — o se borra sola si `vendedor` es None. No
+    # consume parámetros, así que la lista de params es siempre la misma.
+    joins = _JOIN_CLIENTE
+    where = (f"WHERE {_COMP} AND vc.FecMovim BETWEEN ? AND ?\n"
+             + MARCA_VENDEDOR)
     params: tuple = (d1, d2)
-    if vendedor is not None:
-        where = f"WHERE {_COMP} AND vc.FecMovim BETWEEN ? AND ?"
-        params = params_cartera(vendedor) + (d1, d2)
     sql = f"""
 SELECT c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre, SUM({_MONTO}) AS MontoNeto
 {joins}{_JOIN_ART}{where}
   AND {COND_BULON}
 GROUP BY c.CodCliente, LTRIM(RTRIM(c.Cliente_Nombre))
 """
+    sql = recortar_vendedor(sql, vendedor)
     # El HAVING y el ORDER BY se resuelven en Python: con dos sub-empresas el
     # corte va sobre la SUMA de las dos y ningún ORDER BY de una consulta sola
     # ordena el ranking final.
@@ -256,17 +248,14 @@ def fetch_top_patrones(vendedor: int | None = None, limit: int = 1_000_000,
     if hit is not None:
         return hit
 
-    if vendedor is not None:
-        joins, where, params = _JOIN_VENDEDOR, (
-            f"WHERE {_COMP} "
-            "AND vc.FecMovim BETWEEN ? AND ?"
-        ), params_cartera(vendedor) + (d1, d2)
-    else:
-        joins, where, params = """
+    joins = """
 FROM Ven_CompCabecera vc
 JOIN Ven_CompRenglon r   ON r.NroMovVenta = vc.NroMovVenta
 JOIN Ven_CodCom cc       ON vc.CompCodigo = cc.CompCodigo
-""", f"WHERE {_COMP} AND vc.FecMovim BETWEEN ? AND ?", (d1, d2)
+"""
+    where = (f"WHERE {_COMP} AND vc.FecMovim BETWEEN ? AND ?\n"
+             + MARCA_VENDEDOR)
+    params = (d1, d2)
 
     sql = f"""
 SELECT LTRIM(RTRIM(s.ArticuloPatron)) AS Patron,
@@ -277,6 +266,7 @@ SELECT LTRIM(RTRIM(s.ArticuloPatron)) AS Patron,
   AND {COND_BULON}
 GROUP BY LTRIM(RTRIM(s.ArticuloPatron))
 """
+    sql = recortar_vendedor(sql, vendedor)
     conn, cur = _conn()
     try:
         acum: dict[str, list] = {}
@@ -314,7 +304,13 @@ def fetch_top_vendedores(vendedor: int | None = None, limit: int = 1_000_000,
                          desde: str | None = None, hasta: str | None = None,
                          forzar: bool = False) -> dict:
     """Ranking de VENDEDORES por bulonería vendida (el agregado propio de
-    esta vista). Un no-admin sólo se ve a sí mismo.
+    esta vista). Un no-admin se ve a sí mismo y a sus antecesores.
+
+    SUCESIÓN (2026-09-08): el GROUP BY es por código de comprobante, así que
+    un vendedor que se fue sacaría fila propia. Las filas de los antecesores
+    se colapsan en la del sucesor (vendedores.dueno_de) DESPUÉS de la
+    consulta: una fila por persona que hoy vende, y la suma del ranking sigue
+    siendo el total de la línea.
 
     El vendedor de cada venta sale del COMPROBANTE (Ven_CompCabecera.vendedor),
     no de la zona del cliente: refleja quién vendió y no deja afuera a los
@@ -334,13 +330,9 @@ def fetch_top_vendedores(vendedor: int | None = None, limit: int = 1_000_000,
         return hit
 
     where = (f"WHERE {_COMP} "
-             "AND vc.FecMovim BETWEEN ? AND ?")
+             "AND vc.FecMovim BETWEEN ? AND ?\n"
+             + MARCA_VENDEDOR)
     params: tuple = (d1, d2)
-    if vendedor is not None:
-        where = ("WHERE vc.vendedor = ? "
-                 f"AND {_COMP} "
-                 "AND vc.FecMovim BETWEEN ? AND ?")
-        params = (int(vendedor), d1, d2)
     # Se agrupa por vc.vendedor (la columna del comprobante, entera y ya
     # indexada) y el nombre se trae con MAX: un código sin fila en el maestro
     # devuelve NULL y no parte el grupo, y sumar el texto al GROUP BY sería
@@ -354,9 +346,16 @@ SELECT vc.vendedor AS Codigo,
   AND {COND_BULON}
 GROUP BY vc.vendedor
 """
+    sql = recortar_vendedor(sql, vendedor)
     conn, cur = _conn()
     try:
-        items = []
+        # SUCESIÓN (2026-09-08): el GROUP BY es por código de comprobante, así
+        # que un vendedor que se fue saca fila propia. `dueno_de` la manda al
+        # que heredó su cartera, y las dos se suman en un solo acumulador —
+        # una fila por persona que hoy vende, sin perder un peso del total.
+        # El nombre se toma del CÓDIGO DUEÑO (el del sucesor); el del
+        # antecesor no se usa aunque llegue primero.
+        acum: dict[int, list] = {}
         for cod, nom, unid, monto in unir(
             filas_dos(cur, sql, _prueba(sql), params), (0,), (2, 3)
         ):
@@ -364,12 +363,37 @@ GROUP BY vc.vendedor
                 continue
             # Los canales (MOSTRADOR, ECOMMERCE, ZONA …) y los dados de baja
             # NO se descartan: son ventas de la línea y tienen que estar.
-            items.append({
-                "codigo": int(cod),
-                "nombre": _nombre_vendedor(int(cod), nom),
-                "unidades": round(float(_safe(unid) or 0), 2),
-                "monto": round(float(_safe(monto) or 0), 2),
-            })
+            crudo = int(cod)
+            dueno = dueno_de(crudo)
+            a = acum.setdefault(dueno, [0.0, 0.0, None])
+            a[0] += float(_safe(unid) or 0)
+            a[1] += float(_safe(monto) or 0)
+            if crudo == dueno and nom:
+                a[2] = nom
+        # Un sucesor puede no tener venta propia en el período y quedarse sin
+        # nombre (el LEFT JOIN sólo trae el de los códigos que facturaron).
+        # Se resuelven TODOS de una, en la misma conexión: nada de un SELECT
+        # por fila adentro del armado.
+        faltantes = [c for c, (_u, _m, nom) in acum.items() if not nom]
+        if faltantes:
+            cur.execute(
+                "SELECT VendedorCodigo, LTRIM(RTRIM(VendedorNombre)) "
+                "FROM MAGNUS_SITD.dbo.Vendedores WHERE VendedorCodigo IN (%s)"
+                % ",".join(str(int(c)) for c in faltantes)
+            )
+            for cod_v, nom_v in cur.fetchall():
+                if cod_v is not None and int(cod_v) in acum:
+                    acum[int(cod_v)][2] = nom_v
+
+        items = [
+            {
+                "codigo": codigo,
+                "nombre": _nombre_vendedor(codigo, nom),
+                "unidades": round(unid, 2),
+                "monto": round(monto, 2),
+            }
+            for codigo, (unid, monto, nom) in acum.items()
+        ]
         # PADRÓN ÚNICO para las dos listas (2026-08-31). A diferencia de
         # patrones/clientes, acá las filas son PERSONAS y el que las mira sabe
         # quiénes son: si alguien está en $ y no en Unidades, se lee como un
@@ -494,16 +518,11 @@ def fetch_clientes_por_patron(patron: str, vendedor: int | None = None,
     # ArticuloPatron se compara SIN LTRIM/RTRIM para que el índice sirva:
     # en SQL Server la comparación de char/varchar ignora los espacios de
     # cola, así que 'ABC   ' = 'ABC'.
-    if vendedor is not None:
-        joins = _JOIN_VENDEDOR
-        where = (f"WHERE {_COMP} "
-                 "AND vc.FecMovim BETWEEN ? AND ? AND s.ArticuloPatron = ?")
-        params = params_cartera(vendedor) + (d1, d2, patron_norm)
-    else:
-        joins = _JOIN_CLIENTE
-        where = (f"WHERE {_COMP} "
-                 "AND vc.FecMovim BETWEEN ? AND ? AND s.ArticuloPatron = ?")
-        params = (d1, d2, patron_norm)
+    joins = _JOIN_CLIENTE
+    where = (f"WHERE {_COMP} "
+             "AND vc.FecMovim BETWEEN ? AND ? AND s.ArticuloPatron = ?\n"
+             + MARCA_VENDEDOR)
+    params = (d1, d2, patron_norm)
     sub = f"""
 SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
        {_case_anio_mes((a_ant, a_act))} AS AnioMes,
@@ -511,7 +530,7 @@ SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
 {joins}{_JOIN_ART}{where}
   AND {COND_BULON}
 """
-    filas, totales = _matriz(sub, params, a_ant, a_act)
+    filas, totales = _matriz(recortar_vendedor(sub, vendedor), params, a_ant, a_act)
     clientes = [
         {"numero": int(f["clave"]), "nombre": f["nombre"],
          "anioAnterior": f["anioAnterior"], "anioActual": f["anioActual"]}
@@ -534,8 +553,9 @@ def fetch_clientes_por_vendedor(cod_vendedor: int, limit: int = 1_000_000,
     """Ranking de clientes de UN vendedor, en bulonería — lo que abre el
     modal al clickear un vendedor del ranking.
 
-    Corta por el vendedor del COMPROBANTE (vc.vendedor), no por la cartera del
-    vendedor (2026-09-01). Dos razones:
+    Corta por el vendedor del COMPROBANTE (vc.vendedor + los códigos de sus
+    antecesores, ver vendedores.py), no por la cartera del vendedor
+    (2026-09-01). Dos razones:
       · Es lo mismo que suma el ranking, así que el total del modal cierra con
         la fila que se clickeó. Con la cartera traía todas las compras de esos
         clientes, las hubiera facturado él u otro.
@@ -554,12 +574,16 @@ def fetch_clientes_por_vendedor(cod_vendedor: int, limit: int = 1_000_000,
 SELECT c.CodCliente AS Clave, LTRIM(RTRIM(c.Cliente_Nombre)) AS Nombre,
        {_case_anio_mes((a_ant, a_act))} AS AnioMes,
        {_CANT} AS Cant, {_MONTO} AS Monto
-{_JOIN_CLIENTE}{_JOIN_ART}WHERE vc.vendedor = ?
-  AND {_COMP}
+{_JOIN_CLIENTE}{_JOIN_ART}WHERE {_COMP}
   AND vc.FecMovim BETWEEN ? AND ?
   AND {COND_BULON}
+{MARCA_VENDEDOR}
 """
-    filas, totales = _matriz(sub, (int(cod_vendedor), d1, d2), a_ant, a_act)
+    # El modal se abre desde una fila del ranking, que ya viene colapsada al
+    # sucesor: tiene que traer también lo emitido por sus antecesores o el
+    # detalle no sumaría lo que muestra la fila.
+    sub = recortar_vendedor(sub, int(cod_vendedor))
+    filas, totales = _matriz(sub, (d1, d2), a_ant, a_act)
     clientes = [
         {"numero": int(f["clave"]), "nombre": f["nombre"],
          "anioAnterior": f["anioAnterior"], "anioActual": f["anioActual"]}

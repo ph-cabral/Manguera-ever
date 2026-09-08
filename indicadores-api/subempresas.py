@@ -49,7 +49,6 @@ parámetros.
 """
 import os
 
-from cartera import SQL_JOIN_CARTERA
 
 # Overrideable por env, igual que la lista de MAGNUS (ver ventas.py).
 COMPROBANTES_VENTA_PRUEBA = tuple(
@@ -74,10 +73,17 @@ _TABLAS = (
     "Ven_Clientes",
 )
 
-# Marca para sacar el JOIN de cartera de la transformación: la cartera se
-# resuelve SIEMPRE contra las dos sub-empresas (ver cartera.py) y ya trae sus
-# propios `PRU_`, así que reescribirla la rompería.
-_MARCA_CARTERA = "\x00CARTERA\x00"
+# Desde 2026-09-08 ninguna consulta que pase por acá lleva el JOIN de
+# cartera: la venta se corta por `Ven_CompCabecera.vendedor` (ver
+# vendedores.py) y la cartera quedó sólo para permisos, en consultas que no
+# se duplican por sub-empresa. Antes había que blindarla, porque la cartera
+# se resuelve SIEMPRE contra las DOS sub-empresas y ya trae sus propios
+# `PRU_`: reescribirla dejaba `PRU_PRU_Ven_CompCabecera`.
+#
+# La marca quedó como ALARMA, no como parche: si alguien vuelve a meter el
+# JOIN de cartera en una consulta duplicada, esto revienta con un mensaje
+# claro en vez de devolver plata mal.
+_HUELLA_CARTERA = ") cart ON cart.CodCliente = c.CodCliente"
 
 
 def lista(codigos) -> str:
@@ -90,12 +96,17 @@ def sql_prueba(sql: str, venta_magnus, ajuste_magnus) -> str:
 
     Cambia las tablas del circuito de ventas por sus gemelas `PRU_` y las
     listas de comprobantes de MAGNUS por las de PRUEBA. Todo lo demás
-    (maestros de artículos, `MAGNUS_SITD.dbo.Clientes`, el JOIN de cartera,
-    los `?`) queda igual, así la consulta corre con los MISMOS parámetros.
+    (maestros de artículos, `MAGNUS_SITD.dbo.Clientes`, la marca de vendedor
+    de vendedores.py, los `?`) queda igual, así la consulta corre con los
+    MISMOS parámetros.
     """
-    tiene_cartera = SQL_JOIN_CARTERA in sql
-    if tiene_cartera:
-        sql = sql.replace(SQL_JOIN_CARTERA, _MARCA_CARTERA)
+    if _HUELLA_CARTERA in sql:
+        raise ValueError(
+            "sql_prueba() recibió una consulta con el JOIN de cartera. La "
+            "cartera ya mira las dos sub-empresas: duplicarla deja "
+            "PRU_PRU_Ven_CompCabecera. Para recortar por vendedor usar "
+            "vendedores.aplicar() (eje comprobante)."
+        )
 
     for tabla in _TABLAS:
         sql = sql.replace(tabla, "PRU_" + tabla)
@@ -109,8 +120,6 @@ def sql_prueba(sql: str, venta_magnus, ajuste_magnus) -> str:
         if magnus:
             sql = sql.replace(lista(magnus), lista(prueba))
 
-    if tiene_cartera:
-        sql = sql.replace(_MARCA_CARTERA, SQL_JOIN_CARTERA)
     return sql
 
 

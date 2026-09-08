@@ -8,7 +8,7 @@ Tabla (MAGNUS_SITD, misma usada en el JOIN de indicadores):
   · MAGNUS_SITD.dbo.Clientes → CodCliente, Cliente_Nombre
 """
 from db import get_connection
-from cartera import SQL_JOIN_CARTERA, params_cartera, cliente_es_de_vendedor
+from cartera import sql_join_cartera, cliente_es_de_vendedor
 
 SQL_CLIENTE = """
 SELECT TOP 1
@@ -67,12 +67,16 @@ ORDER BY c.Cliente_Nombre
 # rompía la query con error de sintaxis cuando venía un vendedor. Los dos
 # bugs tapaban al otro: el que zafaba del error de sintaxis se comía la lista
 # vacía.
-SQL_CLIENTES_SEARCH_POR_VENDEDOR = """
+# El JOIN de cartera se arma por vendedor (trae también los códigos de sus
+# antecesores, ver vendedores.py) y NO consume parámetros: los dos únicos `?`
+# de esta consulta son los del LIKE.
+def _sql_clientes_search_por_vendedor(vendedor) -> str:
+    return """
 SELECT TOP ({limit})
     c.CodCliente                    AS numero,
     LTRIM(RTRIM(c.Cliente_Nombre))  AS nombre
 FROM MAGNUS_SITD.dbo.Clientes c
-""""" + SQL_JOIN_CARTERA + """
+""" + sql_join_cartera(vendedor) + """
 WHERE (CAST(c.CodCliente AS varchar(20)) LIKE ? OR c.Cliente_Nombre LIKE ?)
 ORDER BY c.Cliente_Nombre
 """
@@ -92,8 +96,8 @@ def fetch_clientes_search(q: str, limit: int = 20, vendedor: int | None = None):
     por código o por nombre (substring, no exacto). Lista vacía si `q` está
     vacío — no se trae el padrón completo de clientes por accidente.
 
-    `vendedor` si se pasa, SOLO devuelve clientes cuyo "Vendedor por
-    Defecto" fijo (ver SQL_CLIENTES_SEARCH_POR_VENDEDOR arriba) coincide —
+    `vendedor` si se pasa, SOLO devuelve clientes de SU cartera (la propia
+    más la de sus antecesores, ver cartera.py y vendedores.py) —
     filtrado server-side en el mismo SELECT, no hay pool ni post-filtrado en
     Python. Un usuario no-admin nunca debe ni siquiera ENCONTRAR en el
     buscador un cliente que no es suyo. Admins llaman sin `vendedor` (ven
@@ -111,8 +115,8 @@ def fetch_clientes_search(q: str, limit: int = 20, vendedor: int | None = None):
             cur.execute(SQL_CLIENTES_SEARCH.format(limit=limit_i), (like, like))
         else:
             cur.execute(
-                SQL_CLIENTES_SEARCH_POR_VENDEDOR.format(limit=limit_i),
-                params_cartera(vendedor) + (like, like),
+                _sql_clientes_search_por_vendedor(vendedor).format(limit=limit_i),
+                (like, like),
             )
         cols = [d[0] for d in cur.description]
         out = []

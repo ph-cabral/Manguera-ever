@@ -689,21 +689,21 @@ export default function ComprasMetricasPage() {
             <KpiCard
               label="Faltantes del mes (total)"
               value={<StackedKpi items={`${fmtNum(colT("faltantes"))} items`} unidades={`${fmtNum(unidT("faltantes"))} u.`} importe={fmtMoney(impT("faltantes"))} />}
-              hint="Nacionales + Importados (+ Otros) juntos: artículos con unidades pendientes en el mes, sus unidades y cuánto faltó en $ (a precio de venta). Fábrica y Original no entran: son producción interna, no compra"
+              hint="Nacionales + Importados. Fábrica y Original no entran: son producción interna, no compra"
               icon={PackageX}
               accent="zinc"
             />
             <KpiCard
               label="Con OC ese mes (total)"
               value={<StackedKpi items={`${fmtNum(colT("conOC"))} items`} unidades={`${fmtNum(unidT("conOC"))} u.`} importe={fmtMoney(impT("conOC"))} />}
-              hint="De esos faltantes, con Orden de Compra de mercadería hecha en el mes (comprobantes 70 ORDEN DE COMPRA y 75 OC IMPO) — unidades pedidas en esas OC y su $. Ojo: el importado se pide por contenedor con meses de anticipación, así que casi nunca tiene OC del mismo mes en que faltó"
+              hint=""
               icon={ShoppingCart}
               accent="zinc"
             />
             <KpiCard
               label="Ingresados ese mes (total)"
               value={<StackedKpi items={`${fmtNum(colT("ingresados"))} items`} unidades={`${fmtNum(unidT("ingresados"))} u.`} importe={fmtMoney(impT("ingresados"))} />}
-              hint="De esos, ya recibidos en depósito — unidades ingresadas por remito y su $"
+              hint="Ingresados en el mes"
               icon={PackageCheck}
               accent="zinc"
             />
@@ -714,21 +714,21 @@ export default function ComprasMetricasPage() {
           <KpiCard
             label="Faltantes del mes"
             value={<StackedKpi items={`${fmtNum(col("faltantes"))} items`} unidades={`${fmtNum(unid("faltantes"))} u.`} importe={fmtMoney(imp("faltantes"))} />}
-            hint="Artículos con unidades pendientes en el mes (habilitados, sin pedidos cancelados), sus unidades y cuánto faltó en $ (a precio de venta)"
+            hint="Faltante Nacionales"
             icon={PackageX}
             accent="orange"
           />
           <KpiCard
             label="Con OC ese mes"
             value={<StackedKpi items={`${fmtNum(col("conOC"))} items`} unidades={`${fmtNum(unid("conOC"))} u.`} importe={fmtMoney(imp("conOC"))} />}
-            hint={`De los faltantes, con Orden de Compra de mercadería hecha ese mes (comprobantes 70 ORDEN DE COMPRA y 75 OC IMPO; las OC de presupuesto por área — RRHH, Marketing, Sistemas, Industria — no cuentan). El total son los ${fmtNum(data?.ocTotalItems ?? 0)} items (${fmtNum(data?.ocTotalUnidades ?? 0)} u.) con OC ese mes, faltantes o no`}
+            hint={`OC Nacional ${fmtNum(data?.ocTotalItems ?? 0)} items (${fmtNum(data?.ocTotalUnidades ?? 0)} u.) que eran faltantes`}
             icon={ShoppingCart}
             accent="blue"
           />
           <KpiCard
             label="Ingresados ese mes"
             value={<StackedKpi items={`${fmtNum(col("ingresados"))} items`} unidades={`${fmtNum(unid("ingresados"))} u.`} importe={fmtMoney(imp("ingresados"))} />}
-            hint="De esos, ya recibidos en depósito — unidades ingresadas por remito y su $. Cuentan todos los tipos de remito de ingreso (por orden, compra directa, a valorizar sin factura), igual que el reporte de remitos del mes"
+            hint="Todos los ingresados en el mes"
             icon={PackageCheck}
             accent="green"
           />

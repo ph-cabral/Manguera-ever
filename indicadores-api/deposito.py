@@ -2654,3 +2654,167 @@ def fetch_contenedor(tag: str):
         }
     finally:
         conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Tiempos de picking (tab "Tiempos de Picking" de /deposito)
+# ═══════════════════════════════════════════════════════════════════════════
+# Fuente: WMS.dbo.OTItem, que guarda PickIni/PickFin POR RENGLON. La hora del
+# heatmap sale de PickFin del ITEM (no de la OT): es el momento real en que se
+# levanto el articulo. Si el renglon no tiene tiempos (no paso por handheld:
+# ~7% de los items, quedan en 1753-01-01, default de SQL Server) se cae a
+# OTFechaHoraEjecucion de la cabecera, asi el conteo de items del heatmap cierra
+# con el tab Picking.
+#
+# Los tiempos se parten en dos para que un outlier no ensucie el promedio:
+# CRONOMETRADOS/SEG_TOTAL solo suman renglones de duracion <= PICK_SEG_MAX, y
+# los que se pasan se cuentan aparte en LARGOS. Medicion sobre agosto 2026:
+# 99,6% de los renglones cronometrados estan por debajo de 5 min y solo 52 de
+# 15.496 pasan los 10 min (tipico: la pantalla quedo abierta entre pedidos).
+# El promedio se calcula en el front como SEG_TOTAL / CRONOMETRADOS.
+PICK_SEG_MAX = 600
+
+# El operario NO se filtra en SQL: se devuelve el nombre y el front recorta con
+# esFilaProductiva() de lib/deposito/parseDeposito.ts, que es donde vive la regla
+# de gerentes/no-operativos. Una sola fuente de verdad para todas las pantallas.
+
+# Grano: fecha x operario x hora. Un mes tipico da ~1.500 filas (30 dias x 8
+# operarios x 10 horas utiles), asi que el front arma los tres ejes del heatmap
+# (operario, dia de semana, dia del mes) sobre estas mismas filas, sin volver a
+# consultar al cambiar de eje.
+SQL_PICK_HEATMAP = f"""
+SELECT
+    CONVERT(varchar(10), OT.OTFechaHoraEjecucion, 103)  AS [FECHA],
+    P.PersonalNombre                                    AS [OPERARIO],
+    DATEPART(HOUR, c.momento)                           AS [HORA],
+    COUNT(*)                                            AS [ITEMS],
+    SUM(CASE WHEN it.OTItemCantCumplida > 0 THEN 1 ELSE 0 END)          AS [RECOLECTADOS],
+    SUM(CASE WHEN c.seg <= {PICK_SEG_MAX} THEN c.seg ELSE 0 END)        AS [SEG_TOTAL],
+    SUM(CASE WHEN c.seg <= {PICK_SEG_MAX} THEN 1 ELSE 0 END)            AS [CRONOMETRADOS],
+    SUM(CASE WHEN c.seg > {PICK_SEG_MAX} THEN 1 ELSE 0 END)             AS [LARGOS]
+FROM OT
+INNER JOIN Codot  ON OT.CodotCodigo = Codot.CodotCodigo AND Codot.CodotProcesoNegocio = 4
+INNER JOIN OTItem it ON it.OTId = OT.OTId AND it.OTItemTipo = 1
+LEFT  JOIN Personal P ON OT.OTUsuarioGUID_Repositor = P.PersonalId
+CROSS APPLY (VALUES (
+    CASE WHEN it.OTItemFechaHoraPickFin > '1900-01-01'
+         THEN it.OTItemFechaHoraPickFin ELSE OT.OTFechaHoraEjecucion END,
+    CASE WHEN it.OTItemFechaHoraPickIni > '1900-01-01'
+          AND it.OTItemFechaHoraPickFin >= it.OTItemFechaHoraPickIni
+         THEN DATEDIFF(SECOND, it.OTItemFechaHoraPickIni, it.OTItemFechaHoraPickFin) END
+)) c(momento, seg)
+WHERE OT.OTEstado IN (2, 3, 4)
+  AND OT.OTFechaHoraEjecucion >= ?
+  AND OT.OTFechaHoraEjecucion <= ?
+GROUP BY CONVERT(varchar(10), OT.OTFechaHoraEjecucion, 103),
+         P.PersonalNombre, DATEPART(HOUR, c.momento)
+"""
+
+# Cabeceras de OT con hora de inicio y fin reales. Los agregados de renglones van
+# por CROSS APPLY correlacionado (seek por la PK de OTItem, una vez por OT) y no
+# por un GROUP BY de toda OTItem, que obligaria a recorrer la tabla entera.
+# INICIO/FIN salen de los renglones (MIN PickIni / MAX PickFin); si ninguno tiene
+# tiempos se cae a los de la cabecera. SEG_SPAN es el reloj de punta a punta e
+# incluye las esperas entre renglones; SEG_ITEMS es la suma de los renglones
+# cronometrados. La diferencia entre los dos es el tiempo muerto de la OT.
+SQL_PICK_OTS = f"""
+SELECT
+    OT.OTId                                              AS [OT],
+    CONVERT(varchar(10), OT.OTFechaHoraEjecucion, 103)   AS [FECHA],
+    P.PersonalNombre                                     AS [OPERARIO],
+    CONVERT(varchar(8), COALESCE(i.ini, NULLIF(OT.OTFechaHoraPickIni, '1753-01-01')), 108) AS [INICIO],
+    CONVERT(varchar(8), COALESCE(i.fin, NULLIF(OT.OTFechaHoraPickFin, '1753-01-01')), 108) AS [FIN],
+    DATEDIFF(SECOND,
+        COALESCE(i.ini, NULLIF(OT.OTFechaHoraPickIni, '1753-01-01')),
+        COALESCE(i.fin, NULLIF(OT.OTFechaHoraPickFin, '1753-01-01')))  AS [SEG_SPAN],
+    i.items                                              AS [ITEMS],
+    i.recol                                              AS [RECOLECTADOS],
+    i.seg_items                                          AS [SEG_ITEMS],
+    i.cron                                               AS [CRONOMETRADOS],
+    i.largos                                             AS [LARGOS],
+    LTRIM(RTRIM(ISNULL(OT.OTClienteNombre, '')))         AS [CLIENTE],
+    OT.{{col_pedido}}                                      AS [PEDIDO]
+FROM OT
+INNER JOIN Codot ON OT.CodotCodigo = Codot.CodotCodigo AND Codot.CodotProcesoNegocio = 4
+LEFT  JOIN Personal P ON OT.OTUsuarioGUID_Repositor = P.PersonalId
+CROSS APPLY (
+    SELECT
+        MIN(CASE WHEN it.OTItemFechaHoraPickIni > '1900-01-01' THEN it.OTItemFechaHoraPickIni END) AS ini,
+        MAX(CASE WHEN it.OTItemFechaHoraPickFin > '1900-01-01' THEN it.OTItemFechaHoraPickFin END) AS fin,
+        COUNT(*)                                                            AS items,
+        SUM(CASE WHEN it.OTItemCantCumplida > 0 THEN 1 ELSE 0 END)          AS recol,
+        SUM(CASE WHEN it.OTItemFechaHoraPickIni > '1900-01-01'
+                  AND it.OTItemFechaHoraPickFin >= it.OTItemFechaHoraPickIni
+                  AND DATEDIFF(SECOND, it.OTItemFechaHoraPickIni, it.OTItemFechaHoraPickFin) <= {PICK_SEG_MAX}
+                 THEN DATEDIFF(SECOND, it.OTItemFechaHoraPickIni, it.OTItemFechaHoraPickFin) ELSE 0 END) AS seg_items,
+        SUM(CASE WHEN it.OTItemFechaHoraPickIni > '1900-01-01'
+                  AND it.OTItemFechaHoraPickFin >= it.OTItemFechaHoraPickIni
+                  AND DATEDIFF(SECOND, it.OTItemFechaHoraPickIni, it.OTItemFechaHoraPickFin) <= {PICK_SEG_MAX}
+                 THEN 1 ELSE 0 END)                                         AS cron,
+        SUM(CASE WHEN it.OTItemFechaHoraPickIni > '1900-01-01'
+                  AND DATEDIFF(SECOND, it.OTItemFechaHoraPickIni, it.OTItemFechaHoraPickFin) > {PICK_SEG_MAX}
+                 THEN 1 ELSE 0 END)                                         AS largos
+    FROM OTItem it
+    WHERE it.OTId = OT.OTId AND it.OTItemTipo = 1
+) i
+WHERE OT.OTEstado IN (2, 3, 4)
+  AND OT.OTFechaHoraEjecucion >= ?
+  AND OT.OTFechaHoraEjecucion <= ?
+  AND i.items > 0
+ORDER BY OT.OTId DESC
+"""
+
+# Renglones de UNA OT (se pide al abrir la fila, no se traen todos de entrada).
+# El nombre del articulo sale de WMS.dbo.Articulo, que es la copia local del
+# maestro: evita cruzar bases contra EVERWEAR para un detalle de 10 renglones.
+SQL_PICK_OT_ITEMS = """
+SELECT
+    it.OTItemNroRenglon                              AS [RENGLON],
+    LTRIM(RTRIM(it.OTItemArticuloId))                AS [ARTICULO],
+    LTRIM(RTRIM(ISNULL(a.ArticuloNombre, '')))       AS [DESCRIPCION],
+    LTRIM(RTRIM(it.OTItemUbicacionCodigo))           AS [UBICACION],
+    it.OTItemCantPedida                              AS [PEDIDA],
+    it.OTItemCantCumplida                            AS [CUMPLIDA],
+    CONVERT(varchar(8), NULLIF(it.OTItemFechaHoraPickIni, '1753-01-01'), 108) AS [INICIO],
+    CONVERT(varchar(8), NULLIF(it.OTItemFechaHoraPickFin, '1753-01-01'), 108) AS [FIN],
+    CASE WHEN it.OTItemFechaHoraPickIni > '1900-01-01'
+          AND it.OTItemFechaHoraPickFin >= it.OTItemFechaHoraPickIni
+         THEN DATEDIFF(SECOND, it.OTItemFechaHoraPickIni, it.OTItemFechaHoraPickFin) END AS [SEG]
+FROM OTItem it
+LEFT JOIN Articulo a ON a.ArticuloId = it.OTItemArticuloId
+WHERE it.OTId = ? AND it.OTItemTipo = 1
+ORDER BY it.OTItemNroRenglon
+"""
+
+
+def fetch_pick_heatmap(desde: datetime, hasta: datetime):
+    """Pickeos por fecha x operario x hora (grano del heatmap de /deposito)."""
+    conn = get_connection("WMS")
+    try:
+        cur = conn.cursor()
+        cur.execute(SQL_PICK_HEATMAP, (desde, hasta))
+        return _rows(cur)
+    finally:
+        conn.close()
+
+
+def fetch_pick_ots(desde: datetime, hasta: datetime):
+    """Una fila por OT de picking con hora de inicio, fin y tiempos."""
+    conn = get_connection("WMS")
+    try:
+        cur = conn.cursor()
+        cur.execute(SQL_PICK_OTS.format(col_pedido=OT_COL_PEDIDO), (desde, hasta))
+        return _rows(cur)
+    finally:
+        conn.close()
+
+
+def fetch_pick_ot_items(ot_id: int):
+    """Renglones de una OT: articulo, ubicacion, hora de inicio/fin y segundos."""
+    conn = get_connection("WMS")
+    try:
+        cur = conn.cursor()
+        cur.execute(SQL_PICK_OT_ITEMS, (ot_id,))
+        return _rows(cur)
+    finally:
+        conn.close()

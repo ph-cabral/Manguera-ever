@@ -14,6 +14,7 @@ from deposito import (
     fetch_stock_deposito1, fetch_stock_por_articulos, fetch_stock_export,
     fetch_contenedor,
     guardar_snapshot_abiertos, guardar_snapshot_wms_estados,
+    fetch_pick_heatmap, fetch_pick_ots, fetch_pick_ot_items,
     PEDIDOS_ABIERTOS_SNAPSHOT_INTERVALO_MIN,
 )
 from compras import (
@@ -1646,3 +1647,48 @@ def compras_lineas_articulos(body: LineasArticulosIn):
         return fetch_lineas_por_articulos(body.codigos)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+
+# ── Depósito: tiempos de picking (tab "Tiempos de Picking") ─────────────────
+# Tres endpoints con la misma fuente (WMS.dbo.OTItem, PickIni/PickFin por
+# renglón) y distinto grano: el heatmap agregado, las cabeceras de OT y el
+# detalle de una OT. Ver deposito.py :: SQL_PICK_*.
+@app.get("/deposito/picking-horas")
+def deposito_picking_horas(
+    desde: str | None = Query(default=None),
+    hasta: str | None = Query(default=None),
+):
+    """Pickeos por fecha x operario x hora. El front arma con estas filas los
+    tres ejes del heatmap (operario, día de semana, día del mes)."""
+    try:
+        d, h = _parse_rango(desde, hasta)
+        rows = fetch_pick_heatmap(d, h)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+    return {"desde": d.date().isoformat(), "hasta": h.date().isoformat(),
+            "total": len(rows), "rows": rows}
+
+
+@app.get("/deposito/picking-ots")
+def deposito_picking_ots(
+    desde: str | None = Query(default=None),
+    hasta: str | None = Query(default=None),
+):
+    """Una fila por OT de picking: hora de inicio, hora de fin, ítems y tiempos."""
+    try:
+        d, h = _parse_rango(desde, hasta)
+        rows = fetch_pick_ots(d, h)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+    return {"desde": d.date().isoformat(), "hasta": h.date().isoformat(),
+            "total": len(rows), "rows": rows}
+
+
+@app.get("/deposito/picking-ot-items")
+def deposito_picking_ot_items(ot: int = Query(...)):
+    """Renglones de una OT con artículo, ubicación, inicio, fin y segundos."""
+    try:
+        rows = fetch_pick_ot_items(ot)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+    return {"ot": ot, "total": len(rows), "rows": rows}

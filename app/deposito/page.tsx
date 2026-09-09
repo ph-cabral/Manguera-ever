@@ -8,8 +8,9 @@ import {
 } from "./components/tabs";
 import { MesaControlTab } from "./components/mesaControl";
 import { ErroresMesaTab } from "./components/erroresMesa";
+import { TiemposPickingTab } from "./components/tiemposPicking";
 import {
-  LayoutDashboard, PackageSearch, Repeat, MapPin, Users, Clock,
+  LayoutDashboard, PackageSearch, Repeat, MapPin, Users, Clock, Timer,
   Loader2, RefreshCw, AlertTriangle, FileSpreadsheet, ClipboardList,
   AlertOctagon,
 } from "lucide-react";
@@ -25,6 +26,7 @@ const TABS = [
   { id: "librepo", label: "Libre + Reposición", icon: Repeat, needs: "prod" },
   { id: "reub", label: "Re-Ubicación", icon: MapPin, needs: "prod" },
   { id: "operarios", label: "Operarios", icon: Users, needs: "prod" },
+  { id: "tiempos-picking", label: "Tiempos de Picking", icon: Timer, needs: "picking" },
   { id: "tiempo", label: "Tiempo de Pedidos", icon: Clock, needs: "tiempo" },
   { id: "mesa-control", label: "Mesas de Control", icon: ClipboardList, needs: "mesa" },
   { id: "errores-mesa", label: "Errores de Mesa", icon: AlertOctagon, needs: "errores" },
@@ -67,7 +69,7 @@ export default function DepositoPage() {
   const ready =
     needs === "tiempo"
       ? !!tiempo
-      : needs === "mesa" || needs === "errores"
+      : needs === "mesa" || needs === "errores" || needs === "picking"
         ? true
         : !!viewProd;
 
@@ -203,6 +205,9 @@ export default function DepositoPage() {
               <ProcesoTab d={viewProd} proceso="Re-Ubicacion" mes="__all__" />
             )}
             {tab === "operarios" && viewProd && <OperariosTab d={viewProd} />}
+            {tab === "tiempos-picking" && (
+              <TiemposPickingTab desde={desde} hasta={hasta} operario={operario} />
+            )}
             {tab === "tiempo" && tiempo && <TiempoTab d={tiempo} mes="__all__" />}
             {tab === "mesa-control" && <MesaControlTab />}
             {tab === "errores-mesa" && <ErroresMesaTab desde={desde} hasta={hasta} />}

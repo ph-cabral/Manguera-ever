@@ -46,6 +46,13 @@ UBIC_COL_CANT = "UbicacionDetalleCantidad"
 
 CODIGOS_COMPROBANTE_WMS = (10, 70, 75, 100, 210, 310)
 
+# OJO: la base WMS esta en compatibility_level 100, asi que NO acepta TRY_CONVERT
+# (EVERWEAR esta en 150 y si lo acepta). Por eso la fecha se recorta con
+# LEFT(...,10) en vez de convertirla: FechaRegistracionPedido ya viene como
+# 'dd/mm/yyyy' de largo 10 en las 10.100 filas, mismo formato que [FECHA EJECUCION],
+# asi que el front las compara como string sin parsear nada raro. Ademas es mas
+# barato que convertir.
+#
 # [FECHA PEDIDO] = fecha en que se REGISTRO el pedido en Magnus
 # (TMP_TiempoDePedidos.FechaRegistracionPedido, misma fuente que /deposito/ingresados),
 # para poder partir lo preparado en "del dia" vs "arrastre de dias anteriores".
@@ -61,7 +68,7 @@ SQL_WMS_TODOS = """
 SELECT
     CONVERT(varchar(10), OT.OTFechaHoraEjecucion, 103) AS [FECHA EJECUCION],
     ISNULL(
-        CONVERT(varchar(10), TRY_CONVERT(date, LTRIM(RTRIM(t.FechaRegistracionPedido)), 103), 103),
+        NULLIF(LEFT(LTRIM(RTRIM(t.FechaRegistracionPedido)), 10), ''),
         CONVERT(varchar(10), OT.OTFechaHoraRegist, 103)
     )                                AS [FECHA PEDIDO],
     CASE Codot.CodotProcesoNegocio
@@ -96,7 +103,7 @@ SQL_WMS_PEDIDOS = """
 SELECT
     CONVERT(varchar(10), OT.OTFechaHoraEjecucion, 103) AS [FECHA EJECUCION],
     ISNULL(
-        CONVERT(varchar(10), TRY_CONVERT(date, LTRIM(RTRIM(t.FechaRegistracionPedido)), 103), 103),
+        NULLIF(LEFT(LTRIM(RTRIM(t.FechaRegistracionPedido)), 10), ''),
         CONVERT(varchar(10), OT.OTFechaHoraRegist, 103)
     )                                AS [FECHA PEDIDO],
     CASE Codot.CodotProcesoNegocio

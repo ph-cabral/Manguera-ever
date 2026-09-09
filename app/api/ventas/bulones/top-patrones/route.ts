@@ -31,8 +31,12 @@ export async function GET(req: NextRequest) {
     // Sin vendedor asignado todavía = cero clientes visibles (no "sin
     // restricción"), mismo criterio que /api/ventas/vendedor/*.
     return NextResponse.json({
-      desde: desde ?? mesActual(),
-      hasta: hasta ?? mesActual(),
+      // Mismo shape que el back: `desde`/`hasta` son el acumulado (null si
+      // no se pidió un rango y no hay meses cerrados) y `mesActual` es la
+      // columna del mes en curso.
+      desde: desde ?? null,
+      hasta: hasta ?? null,
+      mesActual: mesActual(),
       totalPatrones: 0,
       totalPatronesMonto: 0,
       porUnidades: [],

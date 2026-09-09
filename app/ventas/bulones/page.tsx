@@ -141,36 +141,49 @@ interface FilaTabla {
   anioActual: AnioVal;
 }
 
+// Los rankings del pie traen DOS ventanas (2026-09-09, mismo criterio que
+// /ventas/vendedor): el campo pelado es el ACUMULADO Enero→mes anterior y el
+// sufijo `Mes` es el MES EN CURSO. Van en columnas separadas porque el mes
+// está incompleto — ver bulones.py, arriba de fetch_top_clientes.
 interface TopCliente {
   numero: number;
   nombre: string | null;
   monto: number;
+  montoMes: number;
 }
 
 interface TopPatron {
   patron: string;
   detalle: string | null;
   unidades: number;
+  unidadesMes: number;
   monto: number;
+  montoMes: number;
 }
 
 interface TopVendedor {
   codigo: number;
   nombre: string | null;
   unidades: number;
+  unidadesMes: number;
   monto: number;
+  montoMes: number;
 }
 
+// `desde`/`hasta` son NULL en enero: todavía no hay ningún mes cerrado del
+// año y la columna del acumulado queda vacía a propósito.
 interface RespTopClientes {
-  desde: string;
-  hasta: string;
+  desde: string | null;
+  hasta: string | null;
+  mesActual: string;
   totalClientes: number;
   porMonto: TopCliente[];
 }
 
 interface RespTopPatrones {
-  desde: string;
-  hasta: string;
+  desde: string | null;
+  hasta: string | null;
+  mesActual: string;
   totalPatrones: number;
   totalPatronesMonto: number;
   porUnidades: TopPatron[];
@@ -178,8 +191,9 @@ interface RespTopPatrones {
 }
 
 interface RespTopVendedores {
-  desde: string;
-  hasta: string;
+  desde: string | null;
+  hasta: string | null;
+  mesActual: string;
   totalVendedores: number;
   totalVendedoresMonto: number;
   porUnidades: TopVendedor[];
@@ -194,6 +208,13 @@ type Periodo = "ytd" | "meses";
 
 const MESES_CORTOS_ES = [
   "Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic",
+];
+
+// Nombre completo, sólo para el encabezado de la columna del mes en curso:
+// ahí entra uno solo y el corto queda pobre al lado del rango del acumulado.
+const MESES_ES = [
+  "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+  "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
 ];
 
 const fmtNum = (n: number | null | undefined) =>
@@ -454,9 +475,11 @@ export default function VentasBulonesPage() {
   }, [limpiarDetalle]);
 
   // ── Rankings: se piden los TRES al montar ───────────────────────────────
-  // El rango es FIJO y lo resuelve el back (12 meses terminando en el mes
-  // anterior). El back cachea 15 min, así que alternar pestañas es
-  // instantáneo en vez de disparar un fetch por cambio.
+  // El rango lo resuelve el back y son DOS ventanas: acumulado Enero→mes
+  // anterior y mes en curso, cada una en su columna. El back cachea 15 min,
+  // así que alternar pestañas es instantáneo en vez de disparar un fetch por
+  // cambio, y cambiar de métrica tampoco refetchea: las cuatro sumas
+  // (unidades/monto × acumulado/mes) vienen en el mismo payload.
   const [topClientes, setTopClientes] = useState<RespTopClientes | null>(null);
   const [topPatrones, setTopPatrones] = useState<RespTopPatrones | null>(null);
   const [topVendedores, setTopVendedores] = useState<RespTopVendedores | null>(null);
@@ -675,6 +698,29 @@ export default function VentasBulonesPage() {
   const topGrupoSeguro = Math.min(topGrupoAbierto, Math.max(0, topGrupos.length - 1));
   const colTop =
     topVista === "clientes" ? "Cliente" : topVista === "patrones" ? "Patrón" : "Vendedor";
+
+  // Etiquetas de los dos encabezados. Salen del BACK (`desde`/`hasta`/
+  // `mesActual`) para que el título no pueda contradecir a los datos: las
+  // tres respuestas traen el mismo rango, así que alcanza con la de la vista
+  // activa. En enero desde/hasta vienen en null y el acumulado queda vacío.
+  const topResp: { desde: string | null; hasta: string | null; mesActual: string } | null =
+    topVista === "clientes"
+      ? topClientes
+      : topVista === "patrones"
+        ? topPatrones
+        : topVendedores;
+  const nombreMesCorto = (ym: string | null | undefined) =>
+    ym ? MESES_CORTOS_ES[Number(ym.slice(5, 7)) - 1] ?? "" : "";
+  const rangoAcumLabel =
+    topResp?.desde && topResp?.hasta
+      ? `${nombreMesCorto(topResp.desde)}–${nombreMesCorto(topResp.hasta)} ${topResp.hasta.slice(0, 4)}`
+      : "Sin meses cerrados";
+  // El mes en curso va con el nombre entero y SIN año: el año ya está en la
+  // etiqueta del acumulado de al lado. Si el back todavía no contestó no se
+  // inventa un mes, se cae al rótulo genérico.
+  const mesActualLabel = topResp?.mesActual
+    ? MESES_ES[Number(topResp.mesActual.slice(5, 7)) - 1] ?? "Mes en curso"
+    : "Mes en curso";
 
   return (
     <div className="min-h-screen bg-[#111111] text-white">
@@ -1358,10 +1404,11 @@ export default function VentasBulonesPage() {
         )}
 
         {/* Ranking del pie — clientes ($), códigos patrón o vendedores ($ o
-            unidades). El rango es FIJO (12 meses terminando en el mes
-            anterior) y lo resuelve el back. Click en una fila abre el modal.
-            Cambiar de métrica NO refetchea (el back manda las dos listas ya
-            ordenadas), pero sí resetea el acordeón: el orden es distinto. */}
+            unidades), en DOS columnas: acumulado Enero→mes anterior y mes en
+            curso. El rango lo resuelve el back. Click en una fila abre el
+            modal. Cambiar de métrica NO refetchea (el back manda las dos
+            listas ya ordenadas, con las dos ventanas adentro), pero sí
+            resetea el acordeón: el orden es distinto. */}
         {topVista !== "clientes" && !topError && (
           <div className="inline-flex rounded-md border border-zinc-700 overflow-hidden text-sm divide-x divide-zinc-700">
             {(["pesos", "unidades"] as Modo[]).map((m) => (
@@ -1420,6 +1467,36 @@ export default function VentasBulonesPage() {
                       </th>
                       <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800">
                         {modo === "pesos" ? "Pesos" : "Unidades"}
+                        <span className="block text-[11px] font-normal text-zinc-500">
+                          {rangoAcumLabel}
+                        </span>
+                      </th>
+                      {/* Mes en curso: va aparte del acumulado justamente
+                          porque está incompleto — sumarlo adentro haría que
+                          el año se compare contra un mes a medio facturar.
+                          El ícono avisa en el hover que el número todavía
+                          se mueve. */}
+                      <th className="px-3 py-2 font-medium text-right whitespace-nowrap border-l border-zinc-800 text-yellow-400/80">
+                        <span className="inline-flex items-center justify-end gap-1">
+                          <span>{modo === "pesos" ? "Pesos" : "Unidades"}</span>
+                          <span
+                            className="group relative inline-flex cursor-help align-middle"
+                            tabIndex={0}
+                            title="Estos valores son estimativos"
+                            aria-label="Estos valores son estimativos"
+                          >
+                            <Info
+                              size={13}
+                              className="text-zinc-500 hover:text-zinc-300 transition-colors"
+                            />
+                            <span className="pointer-events-none absolute right-0 top-full z-30 mt-1 hidden whitespace-nowrap rounded-md border border-zinc-700 bg-zinc-900 px-2 py-1 text-[11px] font-normal text-zinc-200 shadow-lg group-hover:block group-focus:block">
+                              Estos valores son estimativos
+                            </span>
+                          </span>
+                        </span>
+                        <span className="block text-[11px] font-normal text-zinc-500">
+                          {mesActualLabel}
+                        </span>
                       </th>
                     </tr>
                   </thead>
@@ -1433,7 +1510,7 @@ export default function VentasBulonesPage() {
                           total={topItems.length}
                           abierto={topGrupoSeguro === gIdx}
                           onClick={() => setTopGrupoAbierto(topGrupoSeguro === gIdx ? -1 : gIdx)}
-                          colSpan={3}
+                          colSpan={4}
                         />
                       )}
                       {(topGrupos.length <= 1 || topGrupoSeguro === gIdx) &&
@@ -1459,6 +1536,15 @@ export default function VentasBulonesPage() {
                             : topMetrica === "pesos"
                               ? (pat ?? ven!).monto
                               : (pat ?? ven!).unidades;
+                          // La columna del mes sigue el mismo botón $ |
+                          // Unidades que la del acumulado: las dos siempre
+                          // en la misma métrica, si no la fila mezcla peras
+                          // con manzanas.
+                          const valorTopMes = cli
+                            ? cli.montoMes
+                            : topMetrica === "pesos"
+                              ? (pat ?? ven!).montoMes
+                              : (pat ?? ven!).unidadesMes;
                           const abrir = () =>
                             cli
                               ? abrirCliente({ numero: cli.numero, nombre: cli.nombre })
@@ -1493,6 +1579,9 @@ export default function VentasBulonesPage() {
                               </td>
                               <td className="px-3 py-2 text-right tabular-nums text-yellow-400 font-semibold border-l border-zinc-800 whitespace-nowrap">
                                 {fmtTop(valorTop)}
+                              </td>
+                              <td className="px-3 py-2 text-right tabular-nums text-zinc-300 border-l border-zinc-800 whitespace-nowrap">
+                                {fmtTop(valorTopMes)}
                               </td>
                             </tr>
                           );

@@ -4,6 +4,7 @@ import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 
 import { step3Schema, type Step3Data } from "@/app/rrhh/legajos/nuevo/schemas/step3";
+import { CONVENIOS, CATEGORIAS_POR_CONVENIO } from "@/lib/rrhh/legajoFields";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,6 +18,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+
+// los Select de shadcn no admiten value="", se usa un centinela para "sin cargar"
+const SIN_VALOR = "__ninguno__";
 
 interface Step3Props {
   defaultValues?: Partial<Step3Data>;
@@ -36,6 +40,7 @@ export function Step3Laboral({
     control,
     handleSubmit,
     watch,
+    setValue,
     getValues,
     formState: { errors, isSubmitting },
   } = useForm<Step3Data>({
@@ -52,6 +57,8 @@ export function Step3Laboral({
   });
 
   const banco = watch("banco");
+  const convenio = watch("convenio") ?? "";
+  const categorias = CATEGORIAS_POR_CONVENIO[convenio] ?? [];
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-8">
@@ -101,15 +108,53 @@ export function Step3Laboral({
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <Field label="Convenio colectivo" error={errors.convenio?.message}>
-            <Input
-              {...register("convenio")}
-              placeholder="0130/75 - Comercio"
+            <Controller
+              name="convenio"
+              control={control}
+              render={({ field }) => (
+                <Select
+                  value={field.value || SIN_VALOR}
+                  onValueChange={(v) => {
+                    field.onChange(v === SIN_VALOR ? "" : v);
+                    setValue("categoria", ""); // el catálogo de categorías cambia con el convenio
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Elegí el convenio" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={SIN_VALOR}>—</SelectItem>
+                    {CONVENIOS.map((c) => (
+                      <SelectItem key={c} value={c}>{c}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             />
           </Field>
           <Field label="Categoría" error={errors.categoria?.message}>
-            <Input
-              {...register("categoria")}
-              placeholder="007604 - Categoría B Administrativo"
+            <Controller
+              name="categoria"
+              control={control}
+              render={({ field }) => (
+                <Select
+                  value={field.value || SIN_VALOR}
+                  onValueChange={(v) => field.onChange(v === SIN_VALOR ? "" : v)}
+                  disabled={categorias.length === 0}
+                >
+                  <SelectTrigger>
+                    <SelectValue
+                      placeholder={convenio ? "Elegí la categoría" : "Elegí primero el convenio"}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={SIN_VALOR}>—</SelectItem>
+                    {categorias.map((c) => (
+                      <SelectItem key={c} value={c}>{c}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             />
           </Field>
           <Field label="Puesto interno" error={errors.puestoInterno?.message}>

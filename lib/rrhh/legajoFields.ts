@@ -17,7 +17,10 @@ export interface FieldDef {
   type: FieldType;
   required?: boolean;
   max?: number; // maxLength para VarChar
-  options?: string[]; // para select
+  options?: readonly string[]; // para select
+  // select dependiente: el catálogo sale de otro campo del mismo nivel
+  dependsOn?: string; // nombre del campo padre (ej. "convenio")
+  optionsBy?: Record<string, readonly string[]>; // valor del padre -> opciones
   col?: 1 | 2 | 3; // ancho en grilla (default 1)
 }
 
@@ -27,9 +30,45 @@ export interface SectionDef {
   fields: FieldDef[];
 }
 
+// ---- Convenios y sus categorías ----
+export const CONVENIOS = [
+  "FUERA DE CONVENIO",
+  "MERCANTIL",
+  "SOCAYA",
+  "UOM",
+  "VIAJANTE",
+] as const;
+
+// Catálogo de categorías por convenio. Agregar acá las nuevas: la UI
+// (editor de legajo y alta de personal) las toma de este mismo objeto.
+export const CATEGORIAS_POR_CONVENIO: Record<string, readonly string[]> = {
+  "FUERA DE CONVENIO": ["ADMINISTRATIVO A"],
+  MERCANTIL: [
+    "ADMINISTRATIVO A",
+    "ADMINISTRATIVO B",
+    "ADMINISTRATIVO F",
+    "AUXILIAR B",
+    "AUXILIAR C",
+    "MAESTRANZA Y SERVICIOS A",
+    "MAESTRANZA Y SERVICIOS B",
+    "VENDEDOR B",
+  ],
+  SOCAYA: ["CATEGORIA 1", "CATEGORIA 3"],
+  UOM: [
+    "INGRESANTE",
+    "OFICIAL",
+    "OFICIAL MULTIPLE",
+    "OFICIAL MULTIPLE SUPERIOR",
+    "OPERARIO ESPECIALIZADO MULTIPLE",
+    "TECNICO 6ta CATEG",
+  ],
+  VIAJANTE: ["VIAJANTE EXCLUSIVO"],
+};
+
 // ---- Opciones de selects (ajustar a tus catálogos reales) ----
 export const OPC = {
   estado: ["ACTIVO", "INACTIVO", "SUSPENDIDO", "BAJA"],
+  convenio: CONVENIOS,
   sexo: ["M", "F", "X"],
   estadoCivil: ["Soltero/a", "Casado/a", "Divorciado/a", "Viudo/a", "Conviviente"],
   manoHabil: ["Diestro", "Zurdo", "Ambidiestro"],
@@ -102,8 +141,15 @@ export const SECTIONS: SectionDef[] = [
       { name: "modalidadContrato", label: "Modalidad de contrato", type: "text", max: 100 },
       { name: "situacionRevista", label: "Situación de revista", type: "text", max: 20 },
       { name: "regimen", label: "Régimen", type: "text", max: 40 },
-      { name: "convenio", label: "Convenio", type: "text", max: 100 },
-      { name: "categoria", label: "Categoría", type: "text", max: 100 },
+      { name: "convenio", label: "Convenio", type: "select", options: OPC.convenio, max: 100 },
+      {
+        name: "categoria",
+        label: "Categoría",
+        type: "select",
+        dependsOn: "convenio",
+        optionsBy: CATEGORIAS_POR_CONVENIO,
+        max: 100,
+      },
       { name: "puestoInterno", label: "Puesto interno", type: "text", max: 100 },
       { name: "sector", label: "Sector (texto)", type: "text", max: 60 },
       { name: "retribucionPactada", label: "Retribución pactada", type: "number" },

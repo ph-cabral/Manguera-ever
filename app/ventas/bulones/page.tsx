@@ -13,9 +13,11 @@ import {
   ListChevronsUpDown,
   UserRound,
   Info,
+  Activity,
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
+import PulsoTab from "./PulsoTab";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // /ventas/bulones — la MISMA vista que /ventas/vendedor, acotada a la línea
@@ -50,6 +52,13 @@ import { UsuarioActual } from "@/components/auth/UsuarioActual";
 //
 // Fuente: /api/ventas/bulones/* → indicadores-api (bulones.py). Mismo
 // criterio de "venta neta" ya verificado contra el pivot Excel real.
+//
+// 2026-09-09 — CUARTA pestaña, "Pulso" (PulsoTab.tsx): el ranking del período
+// que se elija (mes o rango) con el OBJETIVO de cada vendedor al lado. Vino
+// del pie de /ventas/presupuestos, donde ya no está. No es un cuarto eje del
+// ranking de acá: tiene período y consultas propias, por eso se prende con un
+// booleano (`vistaPulso`) y reemplaza el cuerpo de la página en vez de entrar
+// en `topVista`.
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface Cliente {
@@ -349,6 +358,12 @@ export default function VentasBulonesPage() {
 
   // ── Ranking del pie ─────────────────────────────────────────────────────
   const [topVista, setTopVista] = useState<TopVista>("clientes");
+  // Pestaña "Pulso" (2026-09-09): el ranking del período elegido con objetivo
+  // por vendedor, que antes vivía al pie de /ventas/presupuestos. Es un
+  // booleano aparte y no un cuarto valor de `TopVista` porque no es otro EJE
+  // del mismo ranking: reemplaza el cuerpo de la página (período propio,
+  // consultas propias) y `topVista` sigue mandando cuando se vuelve.
+  const [vistaPulso, setVistaPulso] = useState(false);
   // Métrica del ranking cuando la vista es "patrones" o "vendedores". En
   // "clientes" no aplica: ahí siempre es $ (igual que en /ventas/vendedor).
   const [topMetrica, setTopMetrica] = useState<Modo>("pesos");
@@ -742,8 +757,9 @@ export default function VentasBulonesPage() {
       {/* Header: 3 filas en el teléfono / 1 en la computadora, con `md:order-*`
           reacomodando. Mismo patrón que /ventas/vendedor — al agregar algo
           nuevo, darle su `md:order-N` o se rompe la alineación. El switch
-          ahora tiene TRES botones (Clientes | Patrón | Vendedor), con
-          Vendedor a la derecha (2026-08-26). */}
+          tiene CUATRO botones (Clientes | Patrón | Vendedor | Pulso): los
+          tres primeros son ejes del mismo ranking, el último cambia toda la
+          vista (2026-09-09). */}
       <header className="sticky top-0 z-50 bg-[#1A1A1A] border-b-[3px] border-yellow-400 px-4 md:px-8 py-3">
         <div className="grid grid-cols-2 items-center gap-x-3 gap-y-2 md:flex md:flex-wrap md:gap-4">
           <div className="flex items-center gap-3 min-w-0 md:order-1">
@@ -755,14 +771,23 @@ export default function VentasBulonesPage() {
           </div>
 
           <h2 className="justify-self-end text-yellow-400 font-bold text-sm md:text-lg uppercase tracking-wide flex items-center gap-2 whitespace-nowrap md:order-3">
-            {topVista === "clientes" ? (
+            {vistaPulso ? (
+              <Activity size={18} />
+            ) : topVista === "clientes" ? (
               <Users size={18} />
             ) : topVista === "patrones" ? (
               <ListChevronsUpDown size={18} />
             ) : (
               <UserRound size={18} />
             )}
-            bulonería · {topVista === "clientes" ? "clientes" : topVista === "patrones" ? "patrones" : "vendedores"}
+            bulonería ·{" "}
+            {vistaPulso
+              ? "pulso"
+              : topVista === "clientes"
+                ? "clientes"
+                : topVista === "patrones"
+                  ? "patrones"
+                  : "vendedores"}
           </h2>
 
           <button
@@ -780,6 +805,7 @@ export default function VentasBulonesPage() {
                 key={v}
                 type="button"
                 onClick={() => {
+                  setVistaPulso(false);
                   if (topVista === v) return;
                   setTopVista(v);
                   setTopGrupoAbierto(0);
@@ -792,12 +818,27 @@ export default function VentasBulonesPage() {
                       : "Ranking de vendedores ($ o unidades)"
                 }
                 className={`px-3 py-2 font-semibold transition-colors ${
-                  topVista === v ? "bg-yellow-400 text-black" : "text-zinc-300 hover:bg-zinc-800"
+                  !vistaPulso && topVista === v
+                    ? "bg-yellow-400 text-black"
+                    : "text-zinc-300 hover:bg-zinc-800"
                 }`}
               >
                 {v === "clientes" ? "Clientes" : v === "patrones" ? "Patrón" : "Vendedor"}
               </button>
             ))}
+            {/* Cuarto botón: no es otro eje del mismo ranking, cambia toda la
+                vista por la del período elegido + objetivos (ver PulsoTab). */}
+            <button
+              type="button"
+              onClick={() => setVistaPulso(true)}
+              title="Ranking del período que elijas, con el objetivo de cada vendedor"
+              className={`px-3 py-2 font-semibold transition-colors inline-flex items-center gap-1.5 ${
+                vistaPulso ? "bg-yellow-400 text-black" : "text-zinc-300 hover:bg-zinc-800"
+              }`}
+            >
+              <Activity size={14} />
+              Pulso
+            </button>
           </div>
 
           <UsuarioActual className="col-span-2 justify-self-end md:col-auto md:order-5 md:ml-auto" />
@@ -1409,7 +1450,9 @@ export default function VentasBulonesPage() {
             modal. Cambiar de métrica NO refetchea (el back manda las dos
             listas ya ordenadas, con las dos ventanas adentro), pero sí
             resetea el acordeón: el orden es distinto. */}
-        {topVista !== "clientes" && !topError && (
+        {vistaPulso && <PulsoTab />}
+
+        {!vistaPulso && topVista !== "clientes" && !topError && (
           <div className="inline-flex rounded-md border border-zinc-700 overflow-hidden text-sm divide-x divide-zinc-700">
             {(["pesos", "unidades"] as Modo[]).map((m) => (
               <button
@@ -1431,13 +1474,13 @@ export default function VentasBulonesPage() {
           </div>
         )}
 
-        {topError && (
+        {!vistaPulso && topError && (
           <div className="rounded-xl border border-red-400/40 bg-zinc-900/40 px-5 py-4 flex items-center gap-3 text-sm text-red-300">
             <AlertTriangle size={16} className="text-red-400" /> {topError}
           </div>
         )}
 
-        {!topError && (
+        {!vistaPulso && !topError && (
           <div
             className={`rounded-xl border border-zinc-800 overflow-hidden transition-opacity ${topLoading ? "opacity-50" : ""}`}
           >

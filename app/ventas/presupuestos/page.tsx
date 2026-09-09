@@ -7,10 +7,6 @@ import {
   ChevronRight,
   FileText,
   RefreshCw,
-  Trophy,
-  UserRound,
-  Users,
-  ListChevronsUpDown,
 } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { UsuarioActual } from "@/components/auth/UsuarioActual";
@@ -18,28 +14,22 @@ import { abrirPicker } from "@/components/ui/abrirPicker";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // /ventas/presupuestos — presupuestos de BULONERÍA (Ven_CodCom 45) separados
-// por estado, y abajo el ranking de VENTAS (2026-08-31).
+// por estado (2026-08-31).
 //
-// Dos mitades que NO comparten fuente y conviene no confundir:
+// Fuente: /api/ventas/presupuestos/bulones (presupuestos.py, tablas
+// Pre_PresupCab/Pre_PresupReng). Una tabla POR ESTADO, una debajo de la otra,
+// cada una colapsable, más chips arriba para mostrar/ocultar. Se eligió
+// apilado en vez de pestañas porque el uso real es comparar "cuánto tengo
+// autorizado vs cuánto aprobado" de un vistazo; con pestañas hay que ir y
+// volver. Los chips tapan el caso contrario (mirar uno solo).
 //
-//   ARRIBA  presupuestos → /api/ventas/presupuestos/bulones (presupuestos.py,
-//           tablas Pre_PresupCab/Pre_PresupReng). Una tabla POR ESTADO, una
-//           debajo de la otra, cada una colapsable, más chips arriba para
-//           mostrar/ocultar. Se eligió apilado en vez de pestañas porque el
-//           uso real es comparar "cuánto tengo autorizado vs cuánto aprobado"
-//           de un vistazo; con pestañas hay que ir y volver. Los chips tapan
-//           el caso contrario (mirar uno solo).
+// El default del período es el MES EN CURSO: un presupuesto se mira mientras
+// está vivo.
 //
-//   ABAJO   ventas → /api/ventas/bulones/top-* (bulones.py), EXACTAMENTE los
-//           mismos endpoints que usa el ranking de /ventas/bulones. Es venta
-//           facturada, NO presupuestos: si los números no cierran contra la
-//           tabla de arriba es porque miden cosas distintas, no es un bug.
-//
-// El selector de mes de arriba manda en las DOS mitades: el ranking recibe el
-// mismo desde/hasta. Ojo que el default de esta vista es el MES EN CURSO,
-// mientras que /ventas/bulones usa la ventana fija de 12 meses cerrados —
-// misma API, distinto rango, así que los totales no van a coincidir con esa
-// otra pantalla salvo que se elija el mismo período.
+// 2026-09-09 — abajo había además el ranking de VENTAS FACTURADAS del período
+// (/api/ventas/bulones/top-*). Se movió entero a la pestaña "Pulso" de
+// /ventas/bulones (app/ventas/bulones/PulsoTab.tsx), donde además tiene el
+// objetivo por vendedor. Esta pantalla quedó con una sola fuente: presupuestos.
 // ──────────────────────────────────────────────────────────────────────────────
 
 interface Renglon {
@@ -105,15 +95,6 @@ interface RespPresupuestos {
   presupuestos: Presupuesto[];
 }
 
-interface TopItem {
-  clave: string;
-  etiqueta: string;
-  unidades: number;
-  monto: number;
-}
-
-type TopVista = "vendedores" | "patrones" | "clientes";
-type Modo = "pesos" | "unidades";
 type OrdenCampo = "fecha" | "cliente" | "neto" | "pendiente";
 
 // Orden de aparición de las tablas: primero los estados VIVOS (los que hay
@@ -169,17 +150,6 @@ export default function VentasPresupuestosPage() {
   const [abiertos, setAbiertos] = useState<Set<number>>(new Set());
   const [orden, setOrden] = useState<{ campo: OrdenCampo; desc: boolean }>({ campo: "fecha", desc: true });
 
-  // Ranking de VENTAS del pie.
-  const [topVista, setTopVista] = useState<TopVista>("vendedores");
-  const [topMetrica, setTopMetrica] = useState<Modo>("pesos");
-  const [top, setTop] = useState<TopItem[]>([]);
-  const [topCargando, setTopCargando] = useState(true);
-  const [topError, setTopError] = useState<string | null>(null);
-
-  // Clientes sólo tiene $ en el back (igual que en /ventas/bulones), así que
-  // la métrica se fuerza y el toggle se deshabilita.
-  const modo: Modo = topVista === "clientes" ? "pesos" : topMetrica;
-
   const cargarPresupuestos = useCallback(async () => {
     setCargando(true);
     setError(null);
@@ -198,44 +168,9 @@ export default function VentasPresupuestosPage() {
     }
   }, [desde, hasta]);
 
-  const cargarTop = useCallback(async () => {
-    setTopCargando(true);
-    setTopError(null);
-    try {
-      const ruta =
-        topVista === "vendedores" ? "top-vendedores" : topVista === "patrones" ? "top-patrones" : "top-clientes";
-      const res = await fetch(`/api/ventas/bulones/${ruta}?desde=${desde}&hasta=${hasta}`, { cache: "no-store" });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error ?? "No se pudo traer el ranking de ventas");
-      const crudo = (modo === "pesos" ? json.porMonto : json.porUnidades) ?? [];
-      // Las tres respuestas traen forma distinta; se normalizan a una sola
-      // fila para que la tabla del pie sea una sola.
-      setTop(
-        crudo.map((i: Record<string, unknown>) => ({
-          clave: String(i.codigo ?? i.patron ?? i.numero ?? ""),
-          etiqueta:
-            (i.nombre as string | null) ??
-            (i.detalle as string | null) ??
-            String(i.patron ?? i.numero ?? i.codigo ?? "(sin nombre)"),
-          unidades: Number(i.unidades ?? 0),
-          monto: Number(i.monto ?? 0),
-        })),
-      );
-    } catch (e) {
-      setTopError(e instanceof Error ? e.message : "Error inesperado");
-      setTop([]);
-    } finally {
-      setTopCargando(false);
-    }
-  }, [desde, hasta, topVista, modo]);
-
   useEffect(() => {
     void cargarPresupuestos();
   }, [cargarPresupuestos]);
-
-  useEffect(() => {
-    void cargarTop();
-  }, [cargarTop]);
 
   const alternar = (set: Set<number>, valor: number, setter: (s: Set<number>) => void) => {
     const copia = new Set(set);
@@ -273,15 +208,6 @@ export default function VentasPresupuestosPage() {
   const resumenDe = (cod: number) =>
     data?.porEstado.find((e) => e.estado === cod) ??
     { estado: cod, nombre: `Estado ${cod}`, cantidad: 0, renglones: 0, neto: 0, total: 0, unidades: 0, pendiente: 0 };
-
-  const valorTop = (i: TopItem) => (modo === "pesos" ? i.monto : i.unidades);
-  // Sólo los valores POSITIVOS entran en el líder y en el total: el ranking
-  // de vendedores puede traer a alguien en cero o en negativo por una nota de
-  // crédito (ver fetch_top_vendedores en bulones.py), y sumarlo achicaría el
-  // denominador de la participación.
-  const positivosTop = top.map(valorTop).filter((v) => v > 0);
-  const maxTop = positivosTop.length ? Math.max(...positivosTop) : 0;
-  const totalTop = positivosTop.reduce((acc, v) => acc + v, 0);
 
   const cabecerasOrden: { campo: OrdenCampo; label: string; align: string }[] = [
     { campo: "fecha", label: "Fecha", align: "text-left" },
@@ -388,10 +314,7 @@ export default function VentasPresupuestosPage() {
 
           <button
             type="button"
-            onClick={() => {
-              void cargarPresupuestos();
-              void cargarTop();
-            }}
+            onClick={() => void cargarPresupuestos()}
             title="Volver a consultar (el back cachea 5 minutos)"
             className="rounded-md border border-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:border-yellow-400 transition-colors inline-flex items-center gap-2"
           >
@@ -656,149 +579,6 @@ export default function VentasPresupuestosPage() {
             </section>
           );
         })}
-
-        {/* ── Pie: ranking de VENTAS (no de presupuestos) ─────────────────── */}
-        <section className="pt-2 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h3 className="text-yellow-400 font-bold uppercase tracking-wide text-sm md:text-base flex items-center gap-2">
-              <Trophy size={18} />
-              Ventas de bulonería · {desde === hasta ? desde : `${desde} → ${hasta}`}
-            </h3>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="inline-flex rounded-md border border-zinc-700 overflow-hidden text-sm divide-x divide-zinc-700">
-                {(["vendedores", "patrones", "clientes"] as TopVista[]).map((v) => (
-                  <button
-                    key={v}
-                    type="button"
-                    onClick={() => setTopVista(v)}
-                    className={`px-3 py-2 font-semibold transition-colors inline-flex items-center gap-1.5 ${
-                      topVista === v ? "bg-yellow-400 text-black" : "text-zinc-300 hover:bg-zinc-800"
-                    }`}
-                  >
-                    {v === "vendedores" ? (
-                      <UserRound size={14} />
-                    ) : v === "patrones" ? (
-                      <ListChevronsUpDown size={14} />
-                    ) : (
-                      <Users size={14} />
-                    )}
-                    {v === "vendedores" ? "Vendedor" : v === "patrones" ? "Patrón" : "Cliente"}
-                  </button>
-                ))}
-              </div>
-              <div className="inline-flex rounded-md border border-zinc-700 overflow-hidden text-sm divide-x divide-zinc-700">
-                {(["pesos", "unidades"] as Modo[]).map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    disabled={topVista === "clientes"}
-                    onClick={() => setTopMetrica(m)}
-                    title={
-                      topVista === "clientes"
-                        ? "El ranking de clientes sólo existe en $"
-                        : m === "pesos"
-                          ? "Ordenar por $ vendidos"
-                          : "Ordenar por unidades vendidas"
-                    }
-                    className={`px-3 py-2 font-semibold transition-colors ${
-                      modo === m ? "bg-yellow-400 text-black" : "text-zinc-300 hover:bg-zinc-800"
-                    } ${topVista === "clientes" ? "opacity-50 cursor-not-allowed" : ""}`}
-                  >
-                    {m === "pesos" ? "$" : "Unidades"}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {topError && (
-            <div className="flex items-center gap-3 rounded-xl border border-red-400/40 bg-[#1A1A1A] px-5 py-3 text-sm text-red-300">
-              <AlertTriangle size={16} className="text-red-400" /> {topError}
-            </div>
-          )}
-
-          {!topError && (
-            <div className={`rounded-xl border border-zinc-800 overflow-hidden ${topCargando ? "opacity-50" : ""}`}>
-              {!topCargando && top.length === 0 ? (
-                <p className="px-5 py-10 text-center text-sm text-zinc-600">
-                  Sin ventas de bulonería registradas en el período.
-                </p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead className="bg-[#1A1A1A] text-zinc-400">
-                    <tr>
-                      <th className="px-2 py-2 text-left font-medium w-10 text-[11px]">#</th>
-                      <th className="px-3 py-2 text-left font-medium">
-                        {topVista === "vendedores" ? "VENDEDOR" : topVista === "patrones" ? "PATRÓN" : "CLIENTE"}
-                      </th>
-                      <th className="px-3 py-2 text-right font-medium whitespace-nowrap border-l border-zinc-800">
-                        {modo === "pesos" ? "VENDIDO" : "UNIDADES"}
-                      </th>
-                      <th className="px-3 py-2 text-left font-medium w-[38%]">PARTICIPACIÓN</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {top.map((i, idx) => {
-                      const v = valorTop(i);
-                      // La barra es proporcional al LÍDER (lectura rápida de
-                      // "quién está lejos"); el % es sobre el TOTAL del
-                      // ranking, que es el número que se suele pedir. No hay
-                      // objetivo cargado en la base, así que no hay
-                      // "cumplimiento" acá.
-                      // v <= 0 es un caso REAL en el ranking de vendedores:
-                      // una nota de crédito puede dejar las unidades netas
-                      // del mes en cero o en negativo con el monto todavía
-                      // positivo (ver fetch_top_vendedores en bulones.py).
-                      // Esa fila se muestra con su número real, sin barra y
-                      // con 0% — meterla en la participación restaría del
-                      // total y le inflaría el porcentaje a todos los demás.
-                      const anchoBarra = v > 0 && maxTop > 0 ? Math.max((v / maxTop) * 100, 1.5) : 0;
-                      const share = v > 0 && totalTop > 0 ? (v / totalTop) * 100 : 0;
-                      return (
-                        <tr key={`${i.clave}-${idx}`} className="border-t border-zinc-900 hover:bg-zinc-900/50">
-                          <td
-                            className={`px-2 py-2 font-bold ${idx === 0 ? "text-yellow-400" : "text-zinc-600"}`}
-                          >
-                            {idx + 1}
-                          </td>
-                          <td className="px-3 py-2 font-semibold text-zinc-100 truncate max-w-0" title={i.etiqueta}>
-                            {i.etiqueta}
-                          </td>
-                          <td
-                            className={
-                              "px-3 py-2 text-right whitespace-nowrap border-l border-zinc-900 " +
-                              (v < 0 ? "text-red-400" : "text-zinc-100")
-                            }
-                            title={
-                              v < 0
-                                ? "Neto negativo en el período: las devoluciones (notas de crédito) superaron a lo facturado en esta métrica."
-                                : undefined
-                            }
-                          >
-                            {modo === "pesos" ? fmtMoney(v) : fmtNum(v)}
-                          </td>
-                          <td className="px-3 py-2">
-                            <span className="flex items-center gap-3">
-                              <span className="h-2.5 flex-1 rounded-full bg-zinc-800 overflow-hidden">
-                                <span
-                                  className="block h-full rounded-full bg-yellow-400"
-                                  style={{ width: `${anchoBarra}%` }}
-                                />
-                              </span>
-                              <span className="w-14 text-right text-xs font-semibold text-zinc-400">
-                                {share.toFixed(1)}%
-                              </span>
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          )}
-        </section>
       </main>
     </div>
   );

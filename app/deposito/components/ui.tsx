@@ -17,6 +17,7 @@ import {
   Tooltip,
   Legend,
   LabelList,
+  ReferenceLine,
 } from "recharts";
 
 // ─── Paleta (EVER WEAR · amarillo de marca + semánticos del mockup) ───────────
@@ -154,12 +155,15 @@ export function SectionTitle({ children }: { children: React.ReactNode }) {
 export function Panel({
   title,
   accent,
+  action,
   children,
   className = "",
   bodyClass = "p-4",
 }: {
   title?: React.ReactNode;
   accent?: React.ReactNode;
+  /** Control alineado a la derecha del encabezado (ej. botón "Objetivo"). */
+  action?: React.ReactNode;
   children: React.ReactNode;
   className?: string;
   bodyClass?: string;
@@ -169,13 +173,14 @@ export function Panel({
       className={`rounded-lg bg-[#171717] border border-zinc-800 ${className}`}
     >
       {title && (
-        <div className="px-4 pt-4 pb-2 mb-1 border-b border-zinc-800 mx-4">
+        <div className="px-4 pt-4 pb-2 mb-1 border-b border-zinc-800 mx-4 flex items-center justify-between gap-3">
           <h3 className="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
             {title}{" "}
             {accent && (
               <span className="text-yellow-400 normal-case">{accent}</span>
             )}
           </h3>
+          {action}
         </div>
       )}
       <div className={bodyClass}>{children}</div>
@@ -511,6 +516,13 @@ function AxisTick({
   );
 }
 
+/**
+ * Línea horizontal de referencia sobre las barras (objetivos del ranking de
+ * operarios de /deposito, 2026-09-09). `y` va en la unidad del eje, no en la
+ * unidad de carga.
+ */
+export type RefLinea = { y: number; label: string; color: string };
+
 export function ChartBar({
   data,
   xKey,
@@ -521,6 +533,7 @@ export function ChartBar({
   angle,
   showValues = false,
   colorByIndex = false,
+  refLines,
 }: {
   data: unknown[];
   xKey: string;
@@ -531,6 +544,7 @@ export function ChartBar({
   angle?: number;
   showValues?: boolean;
   colorByIndex?: boolean;
+  refLines?: RefLinea[];
 }) {
   if (!data.length) return <Empty h={height} />;
   return (
@@ -579,6 +593,14 @@ export function ChartBar({
               stroke={C.border}
               width={52}
               tick={<AxisTick pos="left" format={(v) => fmt(Number(v))} />}
+              /* Con líneas de referencia el eje tiene que llegar hasta la más
+                 alta: si el objetivo queda por encima de la barra más grande,
+                 recharts lo recortaría y la línea no se vería. */
+              domain={
+                refLines?.length
+                  ? [0, (max: number) => Math.max(max, ...refLines.map((r) => r.y)) * 1.08]
+                  : undefined
+              }
             />
           </>
         )}
@@ -646,6 +668,25 @@ export function ChartBar({
             )}
           </Bar>
         ))}
+        {/* Las líneas van DESPUÉS de las <Bar> para que se dibujen encima. */}
+        {!horizontal &&
+          refLines?.map((r) => (
+            <ReferenceLine
+              key={r.label}
+              y={r.y}
+              stroke={r.color}
+              strokeWidth={2}
+              strokeDasharray="6 4"
+              ifOverflow="extendDomain"
+              label={{
+                value: `${r.label} ${fmt(r.y)}`,
+                position: "insideTopRight",
+                fill: r.color,
+                fontSize: 10,
+                fontWeight: 700,
+              }}
+            />
+          ))}
       </BarChart>
     </ResponsiveContainer>
   );

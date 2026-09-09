@@ -26,6 +26,10 @@ type U = {
   // (columna "Vicki RRHH"). OJO: no se filtra por persona, ve a toda la
   // empresa. Ver lib/rrhh/vickiRrhhAcceso.ts.
   vickiRrhhAcceso: boolean;
+  // Puede cargar/editar los OBJETIVOS mensuales del ranking de operarios de
+  // /deposito — las 3 líneas del gráfico (columna "Obj. depósito"). No cambia
+  // qué datos ve. Ver lib/deposito/objetivoAcceso.ts.
+  depositoObjetivoAcceso: boolean;
   activo: boolean;
   ultimoAcceso: string | null;
   createdAt: string;
@@ -167,6 +171,7 @@ export function UsuariosClient() {
               <th className="px-3 py-2 font-medium">Bulonería</th>
               <th className="px-3 py-2 font-medium">Vicki datos</th>
               <th className="px-3 py-2 font-medium">Vicki RRHH</th>
+              <th className="px-3 py-2 font-medium">Obj. depósito</th>
               <th className="px-3 py-2 font-medium">Rol</th>
               <th className="px-3 py-2 font-medium">Estado</th>
               <th className="px-3 py-2 font-medium">Último acceso</th>
@@ -176,13 +181,13 @@ export function UsuariosClient() {
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={11} className="px-3 py-8 text-center text-muted-foreground">
+                <td colSpan={12} className="px-3 py-8 text-center text-muted-foreground">
                   <Loader2 className="inline size-5 animate-spin" />
                 </td>
               </tr>
             ) : items.length === 0 ? (
               <tr>
-                <td colSpan={11} className="px-3 py-8 text-center text-muted-foreground">
+                <td colSpan={12} className="px-3 py-8 text-center text-muted-foreground">
                   Todavía no hay usuarios.
                 </td>
               </tr>
@@ -220,6 +225,13 @@ export function UsuariosClient() {
                       usuario={u}
                       disabled={busy === u.id}
                       onCambiar={(v) => patch(u.id, { vickiRrhhAcceso: v })}
+                    />
+                  </td>
+                  <td className="px-3 py-2">
+                    <CeldaObjetivoDeposito
+                      usuario={u}
+                      disabled={busy === u.id}
+                      onCambiar={(v) => patch(u.id, { depositoObjetivoAcceso: v })}
                     />
                   </td>
                   <td className="px-3 py-2">
@@ -343,6 +355,63 @@ export function UsuariosClient() {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Celda "Obj. depósito": quién puede FIJAR los objetivos mensuales del ranking
+ * de operarios de /deposito — las 3 líneas del gráfico (objetivo verde,
+ * sobresaliente amarilla, bajo rendimiento roja), en Picking, Libre +
+ * Reposición y Re-Ubicación (2026-09-09).
+ *
+ * Es la bandera del ENCARGADO de depósito. A diferencia de "Bulonería", no
+ * abre ninguna vista ni cambia qué datos ve: quien entra a /deposito ve las
+ * líneas igual, lo único que agrega la bandera es el botón para cargarlas. Por
+ * eso se resuelve en vivo contra Postgres y toma efecto sin relogin (ver
+ * lib/deposito/objetivoAcceso.ts).
+ *
+ * Los ADMIN no se muestran conmutables: ya pueden cargar objetivos siempre.
+ */
+function CeldaObjetivoDeposito({
+  usuario,
+  disabled,
+  onCambiar,
+}: {
+  usuario: U;
+  disabled: boolean;
+  onCambiar: (valor: boolean) => void;
+}) {
+  if (usuario.rol === "ADMIN") {
+    return (
+      <span
+        className="text-xs text-muted-foreground"
+        title="Los admin ya pueden cargar los objetivos del ranking de depósito"
+      >
+        carga (admin)
+      </span>
+    );
+  }
+
+  const puede = usuario.depositoObjetivoAcceso;
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onCambiar(!puede)}
+      title={
+        puede
+          ? "Puede fijar el objetivo, el sobresaliente y el piso de bajo rendimiento del ranking de operarios. Click para quitárselo (toma efecto al instante)."
+          : "Ve las líneas del ranking pero no puede cargarlas. Click para habilitarlo como encargado (toma efecto al instante)."
+      }
+      className={
+        "rounded-full px-2 py-0.5 text-xs transition disabled:opacity-50 " +
+        (puede
+          ? "bg-emerald-100 text-emerald-900 hover:bg-emerald-200"
+          : "bg-secondary text-muted-foreground hover:bg-accent")
+      }
+    >
+      {puede ? "carga objetivos" : "solo ve"}
+    </button>
   );
 }
 

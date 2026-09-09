@@ -14,11 +14,19 @@ import {
   ChartDonut,
   ChartEvol,
   PALETTE,
+  C,
   fmtNum,
   fmtMes,
   type Col,
   type Serie,
+  type RefLinea,
 } from "./ui";
+import {
+  useObjetivosDeposito,
+  aMiles,
+  type ObjetivoMes,
+} from "@/lib/deposito/objetivos";
+import { Target } from "lucide-react";
 
 const sumBy = <T,>(rows: T[], f: (r: T) => number) =>
   rows.reduce<number>((s, r) => s + (f(r) || 0), 0);
@@ -379,6 +387,11 @@ export function ProcesoTab({
   const meses = [...new Set(regs.map((r) => r.mes))].sort();
   const mesActivo = meses.includes(mes) ? mes : meses[meses.length - 1];
 
+  // Objetivos del ranking (líneas verde/amarilla/roja) — una sola lectura por
+  // proceso trae todos los meses, así que cambiar de mes no re-consulta.
+  const obj = useObjetivosDeposito(proceso);
+  const [modal, setModal] = React.useState(false);
+
   if (!regs.length) {
     return (
       <div>
@@ -404,6 +417,23 @@ export function ProcesoTab({
     recolectados: x.recolectados,
   }));
   const tabla = tablaOperarios(regsMes);
+
+  // Líneas de referencia del mes activo (ya vienen en ITEMS desde la API).
+  const objMes: ObjetivoMes | undefined = obj.objetivos[mesActivo];
+  const refLines: RefLinea[] = objMes
+    ? [
+        objMes.bajo != null
+          ? { y: objMes.bajo, label: "Bajo rendimiento", color: C.red }
+          : null,
+        { y: objMes.objetivo, label: "Objetivo", color: C.green },
+        objMes.sobresaliente != null
+          ? { y: objMes.sobresaliente, label: "Sobresaliente", color: C.brand }
+          : null,
+      ].filter((l): l is RefLinea => l !== null)
+    : [];
+  const cumplen = objMes
+    ? ranking.filter((r) => r.recolectados >= objMes.objetivo).length
+    : 0;
 
   // Series HISTÓRICAS (todos los meses)
   const recolMes = meses.map((m) => ({
@@ -462,6 +492,19 @@ export function ProcesoTab({
         <Panel
           title={`Ranking operarios — ${nombreDe(mesActivo)}`}
           accent="(top 15)"
+          action={
+            obj.puedeEditar ? (
+              <button
+                type="button"
+                onClick={() => setModal(true)}
+                title="Cargar el objetivo, el sobresaliente y el piso de bajo rendimiento de este mes"
+                className="flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-[#1f1f1f] px-2.5 py-1 text-[11px] font-medium text-zinc-300 hover:border-yellow-400 hover:text-yellow-400 transition-colors shrink-0"
+              >
+                <Target size={13} />
+                {objMes ? "Editar objetivo" : "Objetivo"}
+              </button>
+            ) : null
+          }
         >
           <ChartBar
             data={ranking}
@@ -473,7 +516,24 @@ export function ProcesoTab({
             fmt={(n) => fmtNum(n)}
             angle={0}
             showValues
+            refLines={refLines}
           />
+          {refLines.length > 0 && (
+            <div className="flex flex-wrap items-center gap-4 px-1 pt-2 text-[11px] text-zinc-400">
+              {refLines.map((r) => (
+                <span key={r.label} className="flex items-center gap-1.5">
+                  <span
+                    className="inline-block h-0.5 w-4 rounded"
+                    style={{ background: r.color }}
+                  />
+                  {r.label} · {fmtNum(r.y)}
+                </span>
+              ))}
+              <span className="text-zinc-600">
+                Cumplen el objetivo: {cumplen} de {ranking.length}
+              </span>
+            </div>
+          )}
         </Panel>
       </div>
 
@@ -520,6 +580,247 @@ export function ProcesoTab({
         }))}
       />
       <EvolucionPorOperario meses={meses} matriz={matriz} />
+
+      {modal && (
+        <ObjetivoModal
+          proceso={proceso}
+          meses={meses}
+          mesInicial={mesActivo}
+          nombreDe={nombreDe}
+          objetivos={obj.objetivos}
+          onGuardar={obj.guardar}
+          onBorrar={obj.borrar}
+          onCerrar={() => setModal(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Vista previa del número cargado: lo que se escribe está EN MILES, esto
+// muestra a cuántos items equivale para que no queden dudas de la escala.
+const milesAItems = (v: string) => {
+  const n = Number(v.replace(",", "."));
+  return Number.isFinite(n) && n > 0 ? fmtNum(Math.round(n * 1000)) : "—";
+};
+
+// Definido FUERA de ObjetivoModal a propósito: si viviera adentro, React lo
+// trataría como un componente distinto en cada tecleo y el input perdería el
+// foco letra por letra.
+function CampoObjetivo({
+  label,
+  color,
+  valor,
+  setValor,
+  ayuda,
+}: {
+  label: string;
+  color: string;
+  valor: string;
+  setValor: (v: string) => void;
+  ayuda: string;
+}) {
+  return (
+    <label className="block">
+      <span className="flex items-center gap-2 text-xs font-medium text-zinc-300">
+        <span
+          className="inline-block h-0.5 w-4 rounded"
+          style={{ background: color }}
+        />
+        {label}
+      </span>
+      <div className="mt-1.5 flex items-center gap-2">
+        <input
+          type="number"
+          step="0.1"
+          min="0"
+          inputMode="decimal"
+          value={valor}
+          onChange={(e) => setValor(e.target.value)}
+          placeholder="0"
+          className="w-32 rounded-lg border border-zinc-700 bg-[#1f1f1f] px-3 py-2 text-sm text-zinc-100 outline-none focus:border-yellow-400 tabular-nums"
+        />
+        <span className="text-xs text-zinc-500">
+          mil ={" "}
+          <strong className="text-zinc-300 tabular-nums">
+            {milesAItems(valor)}
+          </strong>{" "}
+          items
+        </span>
+      </div>
+      <span className="mt-1 block text-[11px] text-zinc-600">{ayuda}</span>
+    </label>
+  );
+}
+
+// ─── OBJETIVOS DEL RANKING ────────────────────────────────────────────────────
+// Carga de las 3 líneas que se dibujan sobre el ranking de operarios, por
+// PROCESO y por MES (2026-09-09). Los números se escriben EN MILES — es la
+// escala en la que se piensa el mes (5,3 = 5.300 items) y evita cargar ceros;
+// la API multiplica x1.000 antes de guardar.
+//
+// El mes arranca en el que está mirando la pantalla, pero se puede elegir
+// cualquiera del rango: al cambiarlo, los campos se rellenan con lo que ya
+// esté cargado para ese mes (o quedan vacíos si no hay nada).
+function ObjetivoModal({
+  proceso,
+  meses,
+  mesInicial,
+  nombreDe,
+  objetivos,
+  onGuardar,
+  onBorrar,
+  onCerrar,
+}: {
+  proceso: string;
+  meses: string[];
+  mesInicial: string;
+  nombreDe: (m: string) => string;
+  objetivos: Record<string, ObjetivoMes>;
+  onGuardar: (
+    mes: string,
+    v: { objetivoMiles: string; sobresalienteMiles: string; bajoMiles: string },
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
+  onBorrar: (mes: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  onCerrar: () => void;
+}) {
+  const [mes, setMes] = React.useState(mesInicial);
+  const [objetivo, setObjetivo] = React.useState("");
+  const [sobresaliente, setSobresaliente] = React.useState("");
+  const [bajo, setBajo] = React.useState("");
+  const [guardando, setGuardando] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+
+  // Al abrir y al cambiar de mes: precargar lo que ya esté guardado.
+  React.useEffect(() => {
+    const o = objetivos[mes];
+    setObjetivo(aMiles(o?.objetivo));
+    setSobresaliente(aMiles(o?.sobresaliente));
+    setBajo(aMiles(o?.bajo));
+    setError(null);
+  }, [mes, objetivos]);
+
+  const yaCargado = !!objetivos[mes];
+
+  const guardar = async () => {
+    setGuardando(true);
+    setError(null);
+    const r = await onGuardar(mes, {
+      objetivoMiles: objetivo.replace(",", "."),
+      sobresalienteMiles: sobresaliente.replace(",", "."),
+      bajoMiles: bajo.replace(",", "."),
+    });
+    setGuardando(false);
+    if (r.ok) onCerrar();
+    else setError(r.error);
+  };
+
+  const borrar = async () => {
+    setGuardando(true);
+    setError(null);
+    const r = await onBorrar(mes);
+    setGuardando(false);
+    if (r.ok) onCerrar();
+    else setError(r.error);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-black/70 p-4"
+      onClick={onCerrar}
+    >
+      <div
+        className="w-full max-w-md rounded-xl border border-zinc-800 bg-[#171717] shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="border-b border-zinc-800 px-5 py-4">
+          <h3 className="text-sm font-semibold text-zinc-100">
+            Objetivos del ranking — {proceso}
+          </h3>
+          <p className="mt-1 text-[11px] text-zinc-500">
+            Se cargan <strong className="text-zinc-400">en miles</strong>: 5,3 = 5.300 items.
+          </p>
+        </div>
+
+        <div className="space-y-4 px-5 py-4">
+          <label className="block">
+            <span className="text-xs font-medium text-zinc-300">Mes</span>
+            <select
+              value={mes}
+              onChange={(e) => setMes(e.target.value)}
+              className="mt-1.5 w-full rounded-lg border border-zinc-700 bg-[#1f1f1f] px-3 py-2 text-sm text-zinc-100 outline-none focus:border-yellow-400 cursor-pointer"
+            >
+              {meses.map((m) => (
+                <option key={m} value={m}>
+                  {nombreDe(m)}
+                  {objetivos[m] ? " · cargado" : ""}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <CampoObjetivo
+            label="Sobresaliente"
+            color={C.brand}
+            valor={sobresaliente}
+            setValor={setSobresaliente}
+            ayuda="Opcional. Tiene que ser mayor que el objetivo."
+          />
+          <CampoObjetivo
+            label="Objetivo"
+            color={C.green}
+            valor={objetivo}
+            setValor={setObjetivo}
+            ayuda="Obligatorio. La línea contra la que se mide si cumplieron."
+          />
+          <CampoObjetivo
+            label="Bajo rendimiento"
+            color={C.red}
+            valor={bajo}
+            setValor={setBajo}
+            ayuda="Opcional. Piso: tiene que ser menor que el objetivo."
+          />
+
+          {error && (
+            <div className="rounded-lg border border-red-400/40 bg-red-400/5 px-3 py-2 text-xs text-red-300">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 border-t border-zinc-800 px-5 py-3">
+          {yaCargado ? (
+            <button
+              type="button"
+              onClick={borrar}
+              disabled={guardando}
+              className="text-xs text-zinc-500 hover:text-red-400 transition-colors disabled:opacity-40"
+            >
+              Quitar objetivo del mes
+            </button>
+          ) : (
+            <span />
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onCerrar}
+              disabled={guardando}
+              className="rounded-lg px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-100 transition-colors disabled:opacity-40"
+            >
+              Cancelar
+            </button>
+            <button
+              type="button"
+              onClick={guardar}
+              disabled={guardando || !objetivo}
+              className="rounded-lg bg-yellow-400 px-4 py-1.5 text-xs font-semibold text-black hover:bg-yellow-300 transition-colors disabled:opacity-40"
+            >
+              {guardando ? "Guardando…" : "Guardar"}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

@@ -517,6 +517,12 @@ model usuario {
   // quien lo tiene ve la asistencia de TODA la empresa (un dato de RRHH a
   // medias no sirve). Darlo sólo a RRHH. Ver lib/rrhh/vickiRrhhAcceso.ts.
   vickiRrhhAcceso Boolean @default(false)
+  // Encargado de depósito (2026-09-09): puede cargar/editar los OBJETIVOS
+  // mensuales del ranking de operarios de /deposito (las 3 líneas de
+  // referencia del gráfico) sin ser ADMIN. Sólo eso — no cambia qué datos ve
+  // ni a qué vistas entra. Lo asigna un admin en /admin/usuarios, columna
+  // "Obj. depósito". Ver lib/deposito/objetivoAcceso.ts.
+  depositoObjetivoAcceso Boolean @default(false)
   activo         Boolean   @default(true)
   ultimoAcceso   DateTime?
   createdAt      DateTime  @default(now())
@@ -838,5 +844,29 @@ model finanza_presupuesto_area {
 
   @@unique([codigoArea, mesDesde, mesHasta])
   @@index([mesHasta, mesDesde])
+  @@schema("everwear")
+}
+
+// Objetivos mensuales del ranking de operarios de /deposito (pestañas Picking,
+// Libre + Reposición y Re-Ubicación). Son las 3 líneas de referencia que se
+// dibujan sobre las barras: `objetivo` (verde), `sobresaliente` (amarilla) y
+// `bajo` (roja). DDL a mano en sql/deposito_objetivo.sql; acá sólo el modelo
+// para Prisma (`npx prisma generate` después de correr el SQL).
+// Los tres valores están en ITEMS aunque en la pantalla se carguen en MILES:
+// la API multiplica al escribir. Uno por proceso y mes ('YYYY-MM').
+model deposito_objetivo {
+  id            Int      @id @default(autoincrement())
+  proceso       String   @db.VarChar(40)
+  mes           String   @db.Char(7)
+  objetivo      Int
+  sobresaliente Int?
+  bajo          Int?
+  creadoPor     Int?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // La UNIQUE ya crea el btree (proceso, mes) que usan todas las lecturas
+  // (por proceso + rango de meses): no hace falta un índice aparte.
+  @@unique([proceso, mes])
   @@schema("everwear")
 }

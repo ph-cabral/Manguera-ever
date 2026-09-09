@@ -27,6 +27,7 @@ export async function PATCH(
     bulonesAccesoTotal?: boolean;
     vickiVentasAcceso?: boolean;
     vickiRrhhAcceso?: boolean;
+    depositoObjetivoAcceso?: boolean;
   } = {};
   if (typeof body?.activo === "boolean") data.activo = body.activo;
   if (body?.rol === "ADMIN" || body?.rol === "USUARIO") data.rol = body.rol;
@@ -64,6 +65,14 @@ export async function PATCH(
   // ve a toda la empresa. Ver lib/rrhh/vickiRrhhAcceso.ts.
   if (typeof body?.vickiRrhhAcceso === "boolean") {
     data.vickiRrhhAcceso = body.vickiRrhhAcceso;
+  }
+
+  // Encargado de depósito (2026-09-09): puede cargar/editar los OBJETIVOS
+  // mensuales del ranking de operarios de /deposito (las 3 líneas del
+  // gráfico). No cambia qué datos ve ni a qué vistas entra — sólo habilita el
+  // botón. Ver lib/deposito/objetivoAcceso.ts.
+  if (typeof body?.depositoObjetivoAcceso === "boolean") {
+    data.depositoObjetivoAcceso = body.depositoObjetivoAcceso;
   }
 
   // Reseteo de contraseña: el admin asigna una nueva (mín. 6 caracteres).
@@ -112,6 +121,7 @@ export async function PATCH(
       bulonesAccesoTotal: true,
       vickiVentasAcceso: true,
       vickiRrhhAcceso: true,
+      depositoObjetivoAcceso: true,
     },
     });
     return NextResponse.json({ ok: true, usuario });

@@ -35,6 +35,10 @@ export async function GET(req: NextRequest) {
   if (q) qs.set("q", q);
   if (linea) qs.set("linea", linea);
   if (sp.get("lineaExacta") === "1") qs.set("lineaExacta", "1");
+  // fresh=1: lo manda el botón "Refrescar". El backend cachea el cálculo por
+  // (rango, filtro) para que ordenar y paginar no vuelvan a consultar; esto es
+  // la forma de pedir datos nuevos a propósito.
+  if (sp.get("fresh") === "1") qs.set("fresh", "1");
   try {
     const res = await fetch(`${API_URL}/compras/consumo-lineas?${qs.toString()}`, {
       cache: "no-store",

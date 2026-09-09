@@ -34,6 +34,9 @@ export const legajoUpdateSchema = z.object({
   claveAltaArca: str, fechaEnvioAlta: date, banco: str, bancoOtro: str,
   diaPago: int, percibeSeguroDesempleo: bool, ddjjArt12: bool, sectorId: int,
   lugarId: int,
+  // convenio/categoria se eligen del catálogo: viajan los ids y el service
+  // deja el texto sincronizado (ver resolverConvenio en legajoService.ts)
+  convenioId: int, categoriaId: int,
   // step4
   tieneCargasFamilia: bool, medioPagoAaff: str, medioPagoAaffOtro: str,
   // step5

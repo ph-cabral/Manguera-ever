@@ -1,10 +1,10 @@
 "use client";
 
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 
 import { step3Schema, type Step3Data } from "@/app/rrhh/legajos/nuevo/schemas/step3";
-import { CONVENIOS, CATEGORIAS_POR_CONVENIO } from "@/lib/rrhh/legajoFields";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +21,9 @@ import {
 
 // los Select de shadcn no admiten value="", se usa un centinela para "sin cargar"
 const SIN_VALOR = "__ninguno__";
+
+type Categoria = { id: number; nombre: string };
+type Convenio = { id: number; nombre: string; categorias: Categoria[] };
 
 interface Step3Props {
   defaultValues?: Partial<Step3Data>;
@@ -57,8 +60,27 @@ export function Step3Laboral({
   });
 
   const banco = watch("banco");
-  const convenio = watch("convenio") ?? "";
-  const categorias = CATEGORIAS_POR_CONVENIO[convenio] ?? [];
+
+  // catálogo de convenios con sus categorías anidadas: una sola consulta y el
+  // filtrado por convenio se hace en memoria
+  const [convenios, setConvenios] = useState<Convenio[]>([]);
+  const cargarConvenios = useCallback(
+    () =>
+      fetch("/api/rrhh/convenios")
+        .then((r) => r.json())
+        .then((d) => setConvenios(Array.isArray(d) ? d : []))
+        .catch(() => {}),
+    []
+  );
+  useEffect(() => {
+    cargarConvenios();
+  }, [cargarConvenios]);
+
+  const convenioId = watch("convenioId") ?? null;
+  const categorias = useMemo(
+    () => convenios.find((c) => c.id === convenioId)?.categorias ?? [],
+    [convenios, convenioId]
+  );
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-8">
@@ -107,16 +129,16 @@ export function Step3Laboral({
           Puesto y convenio
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <Field label="Convenio colectivo" error={errors.convenio?.message}>
+          <Field label="Convenio colectivo" error={errors.convenioId?.message}>
             <Controller
-              name="convenio"
+              name="convenioId"
               control={control}
               render={({ field }) => (
                 <Select
-                  value={field.value || SIN_VALOR}
+                  value={field.value ? String(field.value) : SIN_VALOR}
                   onValueChange={(v) => {
-                    field.onChange(v === SIN_VALOR ? "" : v);
-                    setValue("categoria", ""); // el catálogo de categorías cambia con el convenio
+                    field.onChange(v === SIN_VALOR ? null : Number(v));
+                    setValue("categoriaId", null); // la categoría depende del convenio
                   }}
                 >
                   <SelectTrigger>
@@ -124,33 +146,37 @@ export function Step3Laboral({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={SIN_VALOR}>—</SelectItem>
-                    {CONVENIOS.map((c) => (
-                      <SelectItem key={c} value={c}>{c}</SelectItem>
+                    {convenios.map((c) => (
+                      <SelectItem key={c.id} value={String(c.id)}>
+                        {c.nombre}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               )}
             />
           </Field>
-          <Field label="Categoría" error={errors.categoria?.message}>
+          <Field label="Categoría" error={errors.categoriaId?.message}>
             <Controller
-              name="categoria"
+              name="categoriaId"
               control={control}
               render={({ field }) => (
                 <Select
-                  value={field.value || SIN_VALOR}
-                  onValueChange={(v) => field.onChange(v === SIN_VALOR ? "" : v)}
-                  disabled={categorias.length === 0}
+                  value={field.value ? String(field.value) : SIN_VALOR}
+                  onValueChange={(v) => field.onChange(v === SIN_VALOR ? null : Number(v))}
+                  disabled={!convenioId}
                 >
                   <SelectTrigger>
                     <SelectValue
-                      placeholder={convenio ? "Elegí la categoría" : "Elegí primero el convenio"}
+                      placeholder={convenioId ? "Elegí la categoría" : "Elegí primero el convenio"}
                     />
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value={SIN_VALOR}>—</SelectItem>
-                    {categorias.map((c) => (
-                      <SelectItem key={c} value={c}>{c}</SelectItem>
+                    {categorias.map((k) => (
+                      <SelectItem key={k.id} value={String(k.id)}>
+                        {k.nombre}
+                      </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

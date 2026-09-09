@@ -553,6 +553,7 @@ def compras_consumo_articulos(
     q: str | None = Query(None),
     linea: str | None = Query(None),
     lineaExacta: int = Query(0),
+    fresh: int = Query(0),
 ):
     """Vendido/promedio/máximo/mínimo>0 y stock por artículo, para los
     artículos que matchean `q` (código) y/o `linea` (nombre de Stk_Nivel1) — al menos uno
@@ -560,11 +561,14 @@ def compras_consumo_articulos(
     fetch_consumo_articulos): sin filtro se agregaría TODO el catálogo.
 
     `lineaExacta=1` compara la línea por igualdad en vez de substring — lo usa
-    el drill-down de la vista, donde el nombre sale de una fila real."""
+    el drill-down de la vista, donde el nombre sale de una fila real.
+
+    `fresh=1` fuerza recalcular ignorando el cache de métricas — lo manda el
+    botón "Refrescar"; ordenar y paginar reusan el cálculo."""
     try:
         return fetch_consumo_articulos(
             desde, hasta, sort=sort, sort_dir=sortDir, page=page, page_size=pageSize,
-            q=q, linea=linea, linea_exacta=bool(lineaExacta),
+            q=q, linea=linea, linea_exacta=bool(lineaExacta), fresh=bool(fresh),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -618,13 +622,16 @@ def compras_consumo_lineas(
     q: str | None = Query(None),
     linea: str | None = Query(None),
     lineaExacta: int = Query(0),
+    fresh: int = Query(0),
 ):
     """Vendido/promedio/máximo/mínimo>0 y stock por LÍNEA, sobre artículos
-    nacionales. `q`/`linea` son opcionales: sin filtro devuelve todas."""
+    nacionales. `q`/`linea` son opcionales: sin filtro devuelve todas.
+
+    `fresh=1` ignora el cache de métricas (botón "Refrescar")."""
     try:
         return fetch_consumo_lineas(
             desde, hasta, sort=sort, sort_dir=sortDir, page=page, page_size=pageSize,
-            q=q, linea=linea, linea_exacta=bool(lineaExacta),
+            q=q, linea=linea, linea_exacta=bool(lineaExacta), fresh=bool(fresh),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

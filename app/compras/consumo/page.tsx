@@ -1,5 +1,5 @@
 "use client";
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import {
   Loader2, AlertTriangle, Search, LineChart, Package, Sigma, Divide,
   ArrowUpToLine, ArrowDownToLine, Warehouse, Table2,
@@ -278,9 +278,17 @@ export default function ComprasConsumoPage() {
   const filtroActivo = nivel === "lineas" ? filtroLinea : filtroCod;
   const tieneEntrada = !!filtroActivo.trim(); // habilita el botón Refrescar
 
+  // El backend cachea el cálculo por (rango, filtro) unos minutos, así que
+  // ordenar por otra columna o pasar de página sale de memoria en vez de
+  // volver a barrer ventas y stock. "Refrescar" es lo único que pide datos
+  // nuevos: prende esta bandera y el fetch siguiente manda fresh=1.
+  const pedirFrescoRef = useRef(false);
+
   const loadTabla = useCallback(async () => {
     setTablaLoading(true);
     setTablaError(null);
+    const fresco = pedirFrescoRef.current;
+    pedirFrescoRef.current = false;
     try {
       const params = new URLSearchParams({
         desde,
@@ -290,6 +298,7 @@ export default function ComprasConsumoPage() {
         page: String(page),
         pageSize: String(PAGE_SIZE),
       });
+      if (fresco) params.set("fresh", "1");
       if (nivel === "lineas") {
         // Sin filtro obligatorio: la pantalla de entrada lista TODAS las
         // líneas. `appliedLinea` acá es lo que el usuario buscó a mano, así
@@ -350,6 +359,7 @@ export default function ComprasConsumoPage() {
     if (nivel === "lineas") setAppliedLinea(filtroLinea.trim());
     else setAppliedCod(filtroCod.trim());
     setPage(1);
+    pedirFrescoRef.current = true; // saltea el cache del backend
     setRefreshTick((t) => t + 1);
   }, [nivel, filtroCod, filtroLinea]);
 

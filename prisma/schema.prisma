@@ -200,7 +200,45 @@ model legajo {
   // Lugar físico (Oficina/Depósito/Fábrica/etc.) — ver modelo `lugar`.
   lugarId                Int?
   lugarRel               lugar?    @relation(fields: [lugarId], references: [id])
+  // Convenio colectivo y categoría — ver modelos `convenio` / `convenio_categoria`.
+  // Las columnas de texto convenio/categoria de arriba quedan como copia del
+  // nombre elegido (las leen exports y consultas viejas); las escribe
+  // resolverConvenio() en lib/rrhh/legajoService.ts.
+  convenioId             Int?
+  convenioRel            convenio? @relation(fields: [convenioId], references: [id])
+  categoriaId            Int?
+  categoriaRel           convenio_categoria? @relation(fields: [categoriaId], references: [id])
   @@index([estado])
+  @@index([convenioId])
+  @@schema("everwear")
+}
+
+// Catálogo de convenios colectivos y sus categorías. Cabecera + detalle, misma
+// forma que area/sector: la categoría cuelga del convenio, así el selector del
+// legajo no puede cruzar una categoría con el convenio equivocado.
+// Se dan de alta desde la UI (botón "+" del selector de legajo).
+// Ver sql/rrhh_convenio_categoria.sql — correr contra Postgres + `prisma db pull`
+// antes de deployar.
+model convenio {
+  id         Int                  @id @default(autoincrement())
+  nombre     String               @unique @db.VarChar(80)
+  createdAt  DateTime             @default(now())
+  categorias convenio_categoria[]
+  legajos    legajo[]
+
+  @@schema("everwear")
+}
+
+model convenio_categoria {
+  id         Int      @id @default(autoincrement())
+  nombre     String   @db.VarChar(100)
+  convenioId Int
+  createdAt  DateTime @default(now())
+  convenio   convenio @relation(fields: [convenioId], references: [id], onDelete: Cascade)
+  legajos    legajo[]
+
+  @@unique([nombre, convenioId])
+  @@index([convenioId])
   @@schema("everwear")
 }
 

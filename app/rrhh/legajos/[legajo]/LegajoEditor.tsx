@@ -1,9 +1,9 @@
 "use client";
 // app/rrhh/legajos/[legajo]/page.tsx -> editor de legajo completo
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useForm, FormProvider, useFormContext, useFieldArray, useWatch } from "react-hook-form";
+import { useForm, FormProvider, useFormContext, useFieldArray } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
 import {
@@ -15,6 +15,7 @@ import {
 import { legajoUpdateSchema } from "@/lib/rrhh/legajoSchema";
 import { SectorSelect } from "./SectorSelect";
 import { LugarSelect } from "./LugarSelect";
+import { ConvenioSelect } from "./ConvenioSelect";
 
 const ESTADO_CLASS: Record<string, string> = {
   ACTIVO: "bg-green-100 text-green-700",
@@ -22,48 +23,6 @@ const ESTADO_CLASS: Record<string, string> = {
   SUSPENDIDO: "bg-amber-100 text-amber-700",
   BAJA: "bg-red-100 text-red-700",
 };
-
-// ---------- select (soporta catálogo fijo y catálogo dependiente de otro campo) ----------
-function SelectControl({ def, name, cls }: { def: FieldDef; name: string; cls: string }) {
-  const { register, control, setValue } = useFormContext();
-
-  // el campo padre vive al mismo nivel que este, así funciona también dentro de relaciones
-  const padreName = def.dependsOn ? name.replace(/[^.]+$/, def.dependsOn) : null;
-  const nombres = useMemo(
-    () => (padreName ? [name, padreName] : [name]),
-    [name, padreName]
-  );
-  const observado = useWatch({ control, name: nombres }) as (string | undefined)[];
-  const valor = observado?.[0] ?? "";
-  const padre = padreName ? (observado?.[1] ?? "") : "";
-
-  // al cambiar el padre se limpia el hijo; en el montaje no, para no pisar lo guardado
-  const padrePrevio = useRef<string | null>(null);
-  useEffect(() => {
-    if (!padreName) return;
-    if (padrePrevio.current !== null && padrePrevio.current !== padre) {
-      setValue(name, "", { shouldDirty: true, shouldValidate: true });
-    }
-    padrePrevio.current = padre;
-  }, [padreName, padre, name, setValue]);
-
-  const opciones = useMemo(() => {
-    const base = def.optionsBy ? (def.optionsBy[padre] ?? []) : (def.options ?? []);
-    // un valor histórico fuera del catálogo sigue visible hasta que se elija otro
-    return valor && !base.includes(valor) ? [valor, ...base] : [...base];
-  }, [def, padre, valor]);
-
-  return (
-    <select {...register(name)} className={cls}>
-      <option value="">{def.dependsOn && !padre ? "— elegí primero el convenio —" : "—"}</option>
-      {opciones.map((o) => (
-        <option key={o} value={o}>
-          {o}
-        </option>
-      ))}
-    </select>
-  );
-}
 
 // ---------- control de campo (reusado por escalares y celdas de relación) ----------
 function FieldControl({ def, name }: { def: FieldDef; name: string }) {
@@ -73,7 +32,17 @@ function FieldControl({ def, name }: { def: FieldDef; name: string }) {
   if (def.type === "bool") return <input type="checkbox" {...register(name)} className="h-4 w-4" />;
   if (def.type === "textarea")
     return <textarea {...register(name)} rows={3} className="w-full rounded-md border border-slate-300 px-2 py-1 text-sm outline-none focus:border-slate-500" />;
-  if (def.type === "select") return <SelectControl def={def} name={name} cls={cls} />;
+  if (def.type === "select")
+    return (
+      <select {...register(name)} className={cls}>
+        <option value="">—</option>
+        {def.options!.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    );
 
   const type = def.type === "date" ? "date" : def.type === "number" || def.type === "int" ? "number" : "text";
   return (
@@ -346,6 +315,19 @@ export default function LegajoEditor({ id, initial }: { id: number; initial: Rec
         {/* contenido */}
         {section && (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {section.id === "laboral" && (
+              <div className="sm:col-span-3">
+                <ConvenioSelect
+                  convenioId={(methods.watch("convenioId") as number | null) ?? null}
+                  categoriaId={(methods.watch("categoriaId") as number | null) ?? null}
+                  onChange={({ convenioId, categoriaId }) => {
+                    const opts = { shouldDirty: true, shouldValidate: true };
+                    methods.setValue("convenioId", convenioId, opts);
+                    methods.setValue("categoriaId", categoriaId, opts);
+                  }}
+                />
+              </div>
+            )}
             {section.fields.map((f) => (
               <ScalarField key={f.name} def={f} />
             ))}

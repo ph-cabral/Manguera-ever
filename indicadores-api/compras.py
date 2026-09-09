@@ -19,8 +19,11 @@ NOTA (afinar si hace falta): se considera "por llegar" todo renglón con
 Cantidad - CantidadCumplida > 0. No se filtra por Estado. Si aparecieran OC
 ANULADAS con saldo pendiente, sumar su Estado a ESTADOS_CAB_EXCLUIR (abajo).
 """
+from collections import OrderedDict
 from datetime import datetime, date, timedelta
 from decimal import Decimal
+from threading import Lock
+from time import monotonic
 from db import get_connection
 # Criterio de "pedido válido" (Cerrado/Facturado, blacklist de CompCodigo) —
 # el MISMO que usa /ventas/pedidos-mes, para que "vendido" signifique lo mismo
@@ -590,6 +593,11 @@ def fetch_compras_valorizado(desde: str, hasta: str, incluir_fabril: bool = Fals
 # cabecera — exactamente el mismo criterio que /ventas/pedidos-mes, pero
 # filtrado a un solo CodArticu y agrupado por mes.
 
+# El código va contra la columna CRUDA (r.CodArticu = ?), no contra
+# LTRIM(RTRIM(...)): envuelto en funciones el filtro no puede usar el índice
+# VF_PEDREN_Cla_Articu y el detalle de un artículo terminaba barriendo la
+# tabla de renglones entera. SQL Server ignora los espacios finales al
+# comparar CHAR, así que el resultado es el mismo.
 SQL_CONSUMO_ARTICULO = """
 SELECT
     cab.FechaPedido                       AS FechaPedido,
@@ -599,7 +607,7 @@ SELECT
 FROM EVERWEAR.dbo.VenFer_PedidoReng r
 INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = r.NroMovVenta
 LEFT  JOIN MAGNUS_SITD.dbo.Pedido_Estados     est ON cab.EstadoPedido = est.Ped_Estado
-WHERE LTRIM(RTRIM(r.CodArticu)) = ?
+WHERE r.CodArticu = ?
   AND cab.FechaPedido BETWEEN ? AND ?
 """
 
@@ -608,10 +616,14 @@ WHERE LTRIM(RTRIM(r.CodArticu)) = ?
 # constantes; si algún día se agrega un depósito, actualizar en ambos lados.
 CONSUMO_DEPOSITOS = (1, 2, 3)
 
+# Mismo criterio que arriba: columna cruda para poder entrar por el índice
+# agrupado (CodArticulo, CodSucursal, Deposito) en vez de barrer la tabla.
+# Dos variantes del código en vez de LTRIM(): ver _variantes_cod.
 SQL_STOCK_ARTICULO = """
 SELECT a.Deposito, SUM(a.StkReal) AS Stock
 FROM EVERWEAR.dbo.Stk_ArticSucursalDeposito a
-WHERE LTRIM(RTRIM(a.CodArticulo)) = ?
+WHERE a.CodArticulo IN (?, ?)
+  AND a.Deposito IN (1, 2, 3)
 GROUP BY a.Deposito
 """
 
@@ -619,8 +631,22 @@ SQL_NOMBRE_ARTICULO = """
 SELECT TOP 1 ap.Detalle, s.DetalleMedida, s.UnidadMedida
 FROM EVERWEAR.dbo.[StkFer_Articulos] s
 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s.ArticuloPatron
-WHERE LTRIM(RTRIM(s.CodArticulo)) = ?
+WHERE s.CodArticulo IN (?, ?)
 """
+
+
+def _variantes_cod(cod: str) -> list[str]:
+    """El código tal cual y con un espacio adelante.
+
+    Comparar con LTRIM(RTRIM(col)) = ? anula el índice y obliga a barrer la
+    tabla entera (3,7 M de renglones, 558 mil filas de stock, 41 mil
+    artículos) para buscar UN código. Comparando contra la columna cruda entra
+    por índice, y el padding de la derecha no molesta porque SQL Server lo
+    ignora al comparar CHAR. Lo único que se perdía era el puñado de códigos
+    del catálogo cargados con un espacio ADELANTE (hoy 2 artículos), así que
+    se buscan las dos formas: las dos siguen siendo búsquedas por índice."""
+    c = (cod or "").strip()
+    return [c, " " + c]
 
 
 def _meses_rango(desde: str, hasta: str) -> list[str]:
@@ -690,7 +716,7 @@ def fetch_consumo_articulo(codigo: str, desde: str, hasta: str):
             por_mes[key] += float(_safe(d.get("Cantidad")) or 0)
 
         # Nombre del artículo (para confirmar en la vista que el código existe)
-        cur.execute(SQL_NOMBRE_ARTICULO, (cod,))
+        cur.execute(SQL_NOMBRE_ARTICULO, _variantes_cod(cod))
         row = cur.fetchone()
         if row:
             nombre = " ".join(
@@ -698,7 +724,7 @@ def fetch_consumo_articulo(codigo: str, desde: str, hasta: str):
             ) or None
 
         # Stock actual por depósito (1/2/3)
-        cur.execute(SQL_STOCK_ARTICULO, (cod,))
+        cur.execute(SQL_STOCK_ARTICULO, _variantes_cod(cod))
         for dep, stk in cur.fetchall():
             try:
                 dep_i = int(dep)
@@ -772,79 +798,185 @@ INNER JOIN EVERWEAR.dbo.Stk_TiposArticulos t_n ON t_n.CodigoTipo  = s_n.Nacional
 """
 _COND_NACIONAL = "AND t_n.Descripcion = 'Nacional'"
 
+# Joins al catálogo de líneas (Nivel1). Se agregan SOLO cuando hay filtro de
+# línea: sin filtro son dos joins por fila que no se usan para nada.
+_JOIN_LINEA_ART = """
+LEFT  JOIN EVERWEAR.dbo.[StkFer_ArtParamet]   ap ON ap.ArticuloPatron = s_n.ArticuloPatron
+LEFT  JOIN EVERWEAR.dbo.[Stk_Nivel1]          n1 ON n1.Nivel1         = ap.Nivel1
+"""
+
 # Artículos sin Nivel1 resuelto: mismo rótulo que usa el dashboard /compras
 # para no inventar una etiqueta nueva por vista.
 LINEA_SIN_ASIGNAR = "SIN LÍNEA"
 
+# ── Criterio de "pedido válido" resuelto a CÓDIGOS de estado ─────────────────
+# _es_valido() compara la DESCRIPCIÓN del estado (Cerrado/Facturado), lo que
+# obligaba a arrastrar el join a MAGNUS_SITD.dbo.Pedido_Estados y a filtrar en
+# Python fila por fila. Pedido_Estados tiene 8 filas y no cambia, así que se
+# resuelve UNA VEZ por proceso a la lista de Ped_Estado que pasan _es_valido y
+# después se filtra en SQL con `cab.EstadoPedido IN (...)`.
+#
+# El criterio no cambia: los códigos salen de aplicar _es_valido a las mismas
+# descripciones que antes se evaluaban en Python. Ganancia doble — se cae el
+# join entre bases y el GROUP BY puede dejar de arrastrar CompCodigo/Estado,
+# que era lo que multiplicaba las filas que viajaban a Python.
+_ESTADOS_VALIDOS_CACHE: tuple[int, ...] | None = None
+
+SQL_PEDIDO_ESTADOS = """
+SELECT Ped_Estado, Ped_EstadoDescripcion FROM MAGNUS_SITD.dbo.Pedido_Estados
+"""
+
+
+def _estados_validos(cur) -> tuple[int, ...]:
+    """Códigos de Ped_Estado cuya descripción pasa _es_valido, cacheados."""
+    global _ESTADOS_VALIDOS_CACHE
+    if _ESTADOS_VALIDOS_CACHE is None:
+        cur.execute(SQL_PEDIDO_ESTADOS)
+        codigos = []
+        for cod, desc in cur.fetchall():
+            if cod is None or not _es_valido(desc):
+                continue
+            try:
+                codigos.append(int(cod))
+            except (TypeError, ValueError):
+                continue
+        _ESTADOS_VALIDOS_CACHE = tuple(sorted(codigos))
+    return _ESTADOS_VALIDOS_CACHE
+
+
+def _cond_pedido_valido(cur) -> str:
+    """Fragmento de WHERE con el criterio completo de "pedido válido":
+    blacklist de comprobantes + estados Cerrado/Facturado. Son enteros
+    resueltos del propio catálogo, nunca texto del cliente."""
+    estados = _estados_validos(cur)
+    cond = ""
+    if COMP_CODIGOS_EXCLUIDOS:
+        cond += f"\n  AND cab.CompCodigo NOT IN ({','.join(str(c) for c in COMP_CODIGOS_EXCLUIDOS)})"
+    # Sin estados válidos no hay venta posible: 1 = 0 corta la consulta en vez
+    # de devolver todo.
+    cond += (
+        f"\n  AND cab.EstadoPedido IN ({','.join(str(e) for e in estados)})"
+        if estados else "\n  AND 1 = 0"
+    )
+    return cond
+
+
+# ── Cache en proceso de las tablas de consumo ────────────────────────────────
+# Ordenar por otra columna o pasar de página NO cambia el universo consultado:
+# el backend calcula la misma lista de métricas y recién después ordena y
+# recorta. Antes cada clic en un encabezado o en "siguiente" volvía a barrer
+# ventas y stock enteros; ahora el resultado del cálculo se guarda en memoria
+# con clave (rango, q, línea, exacta) y esos clics no tocan la base.
+#
+# TTL corto y explícito: la vista mira meses cerrados, pero el stock es de
+# hoy. El botón "Refrescar" manda fresh=1 y saltea la lectura del cache (igual
+# reescribe la entrada), así que siempre hay una forma de forzar datos nuevos.
+_CACHE_TTL_SEG = 120
+_CACHE_MAX = 32
+_cache_consumo: "OrderedDict[tuple, tuple[float, object]]" = OrderedDict()
+_cache_lock = Lock()
+
+
+def _cache_leer(clave: tuple):
+    """Valor cacheado y no vencido, o None."""
+    with _cache_lock:
+        item = _cache_consumo.get(clave)
+        if item is None:
+            return None
+        guardado, valor = item
+        if monotonic() - guardado > _CACHE_TTL_SEG:
+            _cache_consumo.pop(clave, None)
+            return None
+        _cache_consumo.move_to_end(clave)
+        return valor
+
+
+def _cache_guardar(clave: tuple, valor):
+    with _cache_lock:
+        _cache_consumo[clave] = (monotonic(), valor)
+        _cache_consumo.move_to_end(clave)
+        while len(_cache_consumo) > _CACHE_MAX:
+            _cache_consumo.popitem(last=False)
+
 # NOTA rendimiento (2026-08-12, timeout real reportado): traer CADA
 # renglón de pedido de TODA la empresa para sumar en Python era demasiado
-# lento (>45s, nunca llegaba a responder). Se mueve el SUM a SQL Server,
-# agrupando por (artículo, año, mes, CompCodigo, Estado) — el filtrado
-# (blacklist de comprobantes + _es_valido) se sigue haciendo en Python, IGUAL
-# que en fetch_consumo_articulo, así que el criterio de "vendido" no cambia;
-# solo se reduce drásticamente la cantidad de filas que viajan de SQL Server a
-# Python (de un renglón por pedido a un renglón por artículo+mes+combinación
-# de comprobante/estado). Año/mes se reconstruyen con DATEADD a partir del
-# mismo FechaPedido int-días-desde-1800-12-28 que ya usa el resto de este
-# archivo (confirmado: la versión de un solo artículo ya compara ese mismo
-# campo contra enteros directamente, sin CAST).
+# lento (>45s, nunca llegaba a responder). El SUM se hace en SQL Server.
+#
+# Segunda vuelta de rendimiento: el recorte también se hace
+# ENTERO EN SQL. Antes la consulta agregaba SIEMPRE toda la empresa (con
+# CompCodigo y Estado en el GROUP BY, que multiplicaban las filas) y recién en
+# Python se descartaban comprobantes, estados y los artículos que no eran de
+# la línea pedida. Medido sobre 7 meses: 25.049 filas de ventas + 286.451 de
+# stock viajaban a Python en CADA request; con el filtro de línea abajo (línea
+# más grande del catálogo, 4.517 artículos) son 1.999 + 4.517. El criterio de
+# "vendido" es idéntico, verificado contra la base: mismas unidades totales
+# filtrando por descripción de estado en Python que por código en SQL.
+#
+# `{{valido}}` (comprobantes + estados), `{{q}}`, `{{linea}}` y `{{join_linea}}`
+# los completa fetch_consumo_articulos; el texto del cliente viaja siempre como
+# parámetro. El GROUP BY va por r.CodArticu crudo, sin LTRIM/RTRIM, para que
+# pueda agrupar por índice — SQL Server ignora los espacios finales al
+# comparar y el trim se hace al leer en Python. Año/mes se reconstruyen con
+# DATEADD a partir del mismo FechaPedido int-días-desde-1800-12-28 que ya usa
+# el resto de este archivo.
 SQL_CONSUMO_TODOS = f"""
 SELECT
-    LTRIM(RTRIM(r.CodArticu))                                     AS CodArticu,
+    r.CodArticu                                                   AS CodArticu,
     DATEPART(year,  DATEADD(day, cab.FechaPedido, '1800-12-28'))  AS Anio,
     DATEPART(month, DATEADD(day, cab.FechaPedido, '1800-12-28'))  AS Mes,
-    cab.CompCodigo                                                 AS CompCodigo,
-    est.Ped_EstadoDescripcion                                      AS Estado,
-    SUM(r.CantidadPedida)                                          AS Cantidad
+    SUM(r.CantidadPedida)                                         AS Cantidad
 FROM EVERWEAR.dbo.VenFer_PedidoReng r
 INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = r.NroMovVenta
-LEFT  JOIN MAGNUS_SITD.dbo.Pedido_Estados     est ON cab.EstadoPedido = est.Ped_Estado
 {_JOIN_NACIONAL_RENG}
+{{join_linea}}
 WHERE cab.FechaPedido BETWEEN ? AND ?
   {_COND_NACIONAL}
-GROUP BY LTRIM(RTRIM(r.CodArticu)),
+  {{valido}}
+  {{q}}
+  {{linea}}
+GROUP BY r.CodArticu,
          DATEPART(year,  DATEADD(day, cab.FechaPedido, '1800-12-28')),
-         DATEPART(month, DATEADD(day, cab.FechaPedido, '1800-12-28')),
-         cab.CompCodigo,
-         est.Ped_EstadoDescripcion
+         DATEPART(month, DATEADD(day, cab.FechaPedido, '1800-12-28'))
 """
 
+# Stock ya sumado por artículo: la vista de artículos muestra el stock TOTAL,
+# nunca la apertura por depósito (esa es la vista de un solo artículo), así
+# que traer una fila por artículo+depósito era traer 14 filas para sumar 3.
+# Con `Deposito IN (1,2,3)` y el SUM en SQL, las 286.451 filas del catálogo
+# nacional bajan a 21.014 sin filtro de línea — y a las de la línea con él.
 SQL_STOCK_TODOS = f"""
-SELECT LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo, a.Deposito, SUM(a.StkReal) AS Stock
+SELECT a.CodArticulo AS CodArticulo, SUM(a.StkReal) AS Stock
 FROM EVERWEAR.dbo.Stk_ArticSucursalDeposito a
 {_JOIN_NACIONAL_STOCK}
-WHERE 1 = 1
+{{join_linea}}
+WHERE a.Deposito IN ({','.join(str(d) for d in CONSUMO_DEPOSITOS)})
   {_COND_NACIONAL}
-GROUP BY LTRIM(RTRIM(a.CodArticulo)), a.Deposito
+  {{q}}
+  {{linea}}
+GROUP BY a.CodArticulo
 """
 
+# El IN va contra la columna cruda para que entre por el índice agrupado de
+# StkFer_Articulos: con LTRIM(RTRIM(...)) buscar 20 nombres barría las 41.000
+# filas del catálogo. Cada código se manda en sus dos variantes (ver
+# _variantes_cod). El SELECT sí devuelve el código trimmeado, que es la clave
+# con la que se arman las filas en Python.
 SQL_NOMBRES_CHUNK = """
 SELECT LTRIM(RTRIM(s.CodArticulo)) AS CodArticulo, ap.Detalle, s.DetalleMedida, s.UnidadMedida
 FROM EVERWEAR.dbo.[StkFer_Articulos] s
 LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s.ArticuloPatron
-WHERE LTRIM(RTRIM(s.CodArticulo)) IN ({ph})
+WHERE s.CodArticulo IN ({ph})
 """
 
 # Línea = NOMBRE en EVERWEAR.dbo.Stk_Nivel1.Detalle, resuelto desde el CÓDIGO
 # StkFer_ArtParamet.Nivel1 (int) — ver el bloque de catálogo en ventas.py.
 # Antes esto filtraba y mostraba el Nivel1 crudo, o sea el número.
 #
-# Filtro por substring (LIKE) sobre el NOMBRE, NO exacto: el input de
-# /compras/consumo es texto libre — mismo criterio que el filtro `q` de
-# código. Se consulta directo contra el catálogo (sin IN de miles de códigos,
-# a diferencia de SQL_NOMBRES_CHUNK) y se intersecta en Python contra los
-# `codigos` candidatos (con venta o stock) ya calculados.
-SQL_CODIGOS_POR_LINEA = """
-SELECT LTRIM(RTRIM(s.CodArticulo)) AS CodArticulo
-FROM EVERWEAR.dbo.[StkFer_Articulos] s
-INNER JOIN EVERWEAR.dbo.[Stk_TiposArticulos] t_n ON t_n.CodigoTipo    = s.NacionalImportado
-LEFT JOIN EVERWEAR.dbo.[StkFer_ArtParamet] ap ON ap.ArticuloPatron = s.ArticuloPatron
-LEFT JOIN EVERWEAR.dbo.[Stk_Nivel1]        n1 ON n1.Nivel1         = ap.Nivel1
-WHERE t_n.Descripcion = 'Nacional'
-  {cond}
-"""
-
-
+# El filtro se arma como fragmento de WHERE y se aplica DENTRO de las
+# consultas de ventas y de stock (junto con _JOIN_LINEA_ART). Antes se
+# resolvía aparte el universo de códigos de la línea y se intersectaba en
+# Python contra todo el catálogo ya agregado: se agregaba la empresa entera
+# para después tirar el 95%.
 def _cond_linea(linea: str, exacta: bool) -> tuple[str, list]:
     """Fragmento de WHERE + parámetros para filtrar por línea sobre
     LTRIM(RTRIM(n1.Detalle)). Devuelve ("", []) si no hay línea.
@@ -913,6 +1045,100 @@ def fetch_lineas():
 _SORT_KEYS = ("codigo", "stock", "totalVendido", "promedio", "maximo", "minimo")
 
 
+def _fragmentos_filtro(q_norm: str, linea_norm: str, linea_exacta: bool,
+                       col_q: str) -> tuple[str, str, str, list]:
+    """(join_linea, frag_q, frag_linea, params) para armar las consultas de
+    consumo con el filtro ya aplicado en SQL.
+
+    `col_q` es la columna de código de la tabla que se está filtrando
+    (`r.CodArticu` en ventas, `a.CodArticulo` en stock). El texto del cliente
+    nunca se interpola: viaja como parámetro."""
+    frag_q = f"AND {col_q} LIKE ?" if q_norm else ""
+    frag_linea, params_linea = _cond_linea(linea_norm, linea_exacta)
+    join_linea = _JOIN_LINEA_ART if linea_norm else ""
+    params: list = []
+    if q_norm:
+        params.append(f"%{q_norm}%")
+    params.extend(params_linea)
+    return join_linea, frag_q, frag_linea, params
+
+
+def _metricas_articulos(cur, meses, meses_set, n_meses, d1n, d2n,
+                        q_norm, linea_norm, linea_exacta):
+    """Una fila de métricas por artículo (sin nombre, sin ordenar, sin
+    paginar) para el universo que matchea `q`/`linea`.
+
+    Es la parte cara de fetch_consumo_articulos y la que se cachea: no
+    depende del orden ni de la página pedida."""
+    cond_valido = _cond_pedido_valido(cur)
+
+    join_v, frag_qv, frag_lv, params_v = _fragmentos_filtro(
+        q_norm, linea_norm, linea_exacta, "r.CodArticu")
+    join_s, frag_qs, frag_ls, params_s = _fragmentos_filtro(
+        q_norm, linea_norm, linea_exacta, "a.CodArticulo")
+
+    ventas: dict[str, dict[str, float]] = {}
+    stock: dict[str, float] = {}
+
+    cur.execute(
+        SQL_CONSUMO_TODOS.format(
+            join_linea=join_v, valido=cond_valido, q=frag_qv, linea=frag_lv),
+        [d1n, d2n] + params_v,
+    )
+    for cod, anio, mes_n, cant in cur.fetchall():
+        cod = (str(cod or "")).strip()
+        if not cod:
+            continue
+        try:
+            key = f"{int(anio):04d}-{int(mes_n):02d}"
+        except (TypeError, ValueError):
+            continue
+        if key not in meses_set:
+            continue
+        m = ventas.get(cod)
+        if m is None:
+            m = {mes: 0.0 for mes in meses}
+            ventas[cod] = m
+        m[key] += float(_safe(cant) or 0)
+
+    cur.execute(
+        SQL_STOCK_TODOS.format(join_linea=join_s, q=frag_qs, linea=frag_ls),
+        params_s,
+    )
+    for cod, stk in cur.fetchall():
+        cod = (str(cod or "")).strip()
+        if not cod:
+            continue
+        stock[cod] = stock.get(cod, 0.0) + float(_safe(stk) or 0)
+
+    # El filtro de código ya lo aplicó SQL (LIKE, collation CI = el .lower()
+    # de antes). Se repite acá sobre una lista chica por si el padding de los
+    # CHAR de Magnus hiciera entrar algo de más.
+    codigos = sorted(set(ventas.keys()) | set(stock.keys()))
+    ql = q_norm.lower()
+    if ql:
+        codigos = [c for c in codigos if ql in c.lower()]
+
+    metrics = []
+    for cod in codigos:
+        ventas_cod = ventas.get(cod)
+        cantidades = [round(ventas_cod[m], 2) for m in meses] if ventas_cod else [0.0] * n_meses
+        total = round(sum(cantidades), 2)
+        promedio = round(total / n_meses, 2) if n_meses else 0.0
+        maximo = max(cantidades) if cantidades else 0.0
+        positivos = [c for c in cantidades if c > 0]
+        minimo = min(positivos) if positivos else None
+        metrics.append({
+            "codigo": cod,
+            "totalVendido": total,
+            "promedio": promedio,
+            "maximo": maximo,
+            "minimo": minimo,
+            "stock": round(stock.get(cod, 0.0), 2),
+        })
+    return metrics
+
+
 def fetch_consumo_articulos(
     desde: str,
     hasta: str,
@@ -924,6 +1150,7 @@ def fetch_consumo_articulos(
     linea: str | None = None,
     linea_exacta: bool = False,
     export: bool = False,
+    fresh: bool = False,
 ):
     """Igual que fetch_consumo_articulo pero para TODOS los artículos a la
     vez: vendido por mes, total, promedio, máximo, mínimo > 0 y stock actual
@@ -956,11 +1183,15 @@ def fetch_consumo_articulos(
     en el navegador — con un catálogo grande eso tira abajo el proceso
     (killed a mitad de respuesta, sin log de uvicorn: 'other side closed').
     Ahora los números (vendido/promedio/máximo/mínimo/stock) SÍ se calculan
-    para todo el catálogo filtrado por `q` — hace falta para poder ordenar
+    para todo el universo filtrado — hace falta para poder ordenar
     correctamente — pero eso es liviano (son floats, no texto). El nombre del
-    artículo (la parte pesada: join a StkFer_Articulos) se busca SOLO para
-    los `page_size` códigos de la página pedida, así la respuesta nunca crece
-    con el tamaño del catálogo."""
+    artículo (join a StkFer_Articulos) se busca SOLO para los `page_size`
+    códigos de la página pedida, así la respuesta nunca crece con el tamaño
+    del catálogo.
+
+    `fresh=True` saltea el cache de métricas (lo manda el botón "Refrescar"):
+    ordenar por otra columna o pasar de página reusa el cálculo cacheado y no
+    vuelve a consultar la base — ver _cache_leer/_cache_guardar."""
     q_norm = (q or "").strip()
     linea_norm = (linea or "").strip()
     if not q_norm and not linea_norm:
@@ -983,119 +1214,45 @@ def fetch_consumo_articulos(
     page = max(1, int(page or 1))
     page_size = max(1, min(int(page_size or 20), 200))  # tope defensivo
 
-    ventas: dict[str, dict[str, float]] = {}
-    stock_por_dep: dict[str, dict[int, float]] = {}
+    # Las métricas de TODO el universo filtrado (sin ordenar ni paginar) son
+    # lo caro y no dependen de sort/page: se cachean con clave (rango, filtro)
+    # para que ordenar por otra columna o pasar de página no vuelva a la base.
+    clave_cache = ("articulos", d1n, d2n, q_norm.lower(), linea_norm.lower(), bool(linea_exacta))
+    metrics = None if fresh else _cache_leer(clave_cache)
 
     conn = get_connection("EVERWEAR")
     try:
         cur = conn.cursor()
         cur.execute("SET DATEFORMAT ymd; SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
 
-        cur.execute(SQL_CONSUMO_TODOS, (d1n, d2n))
-        cols = [c[0] for c in cur.description]
-        # Ya viene agrupado por (artículo, año, mes, CompCodigo, Estado) —
-        # muchas menos filas que un renglón por pedido. El filtrado (blacklist
-        # de comprobantes + _es_valido) se hace acá, IGUAL que en
-        # fetch_consumo_articulo, así que el criterio de "vendido" es el mismo.
-        for row in cur.fetchall():
-            d = dict(zip(cols, row))
-            cod = (str(d.get("CodArticu") or "")).strip()
-            if not cod:
-                continue
-            try:
-                comp = int(d.get("CompCodigo")) if d.get("CompCodigo") is not None else None
-            except (TypeError, ValueError):
-                comp = None
-            if comp in COMP_CODIGOS_EXCLUIDOS:
-                continue
-            if not _es_valido(d.get("Estado")):
-                continue
-            try:
-                anio = int(d.get("Anio"))
-                mes_n = int(d.get("Mes"))
-            except (TypeError, ValueError):
-                continue
-            key = f"{anio:04d}-{mes_n:02d}"
-            if key not in meses_set:
-                continue
-            m = ventas.get(cod)
-            if m is None:
-                m = {mes: 0.0 for mes in meses}
-                ventas[cod] = m
-            m[key] += float(_safe(d.get("Cantidad")) or 0)
-
-        cur.execute(SQL_STOCK_TODOS)
-        for cod, dep, stk in cur.fetchall():
-            cod = (str(cod or "")).strip()
-            if not cod:
-                continue
-            try:
-                dep_i = int(dep)
-            except (TypeError, ValueError):
-                continue
-            if dep_i not in CONSUMO_DEPOSITOS:
-                continue
-            d = stock_por_dep.get(cod)
-            if d is None:
-                d = {dd: 0.0 for dd in CONSUMO_DEPOSITOS}
-                stock_por_dep[cod] = d
-            d[dep_i] += float(_safe(stk) or 0)
-
-        codigos = sorted(set(ventas.keys()) | set(stock_por_dep.keys()))
-        ql = q_norm.lower()
-        if ql:
-            codigos = [c for c in codigos if ql in c.lower()]
-
-        # Filtro por línea (NOMBRE de Stk_Nivel1, substring) — AND con `q`.
-        # Se resuelve el universo de códigos que matchean la línea en una
-        # sola consulta al catálogo (NO con un IN de los `codigos` candidatos,
-        # que puede ser una lista larga) y se intersecta acá en Python.
-        if linea_norm:
-            cond, params = _cond_linea(linea_norm, linea_exacta)
-            cur.execute(SQL_CODIGOS_POR_LINEA.format(cond=cond), params)
-            set_linea = {(str(r[0] or "")).strip() for r in cur.fetchall()}
-            codigos = [c for c in codigos if c in set_linea]
-
-        # Métricas por artículo — SOLO números (livianos), para TODO el
-        # universo filtrado por `q`/`linea`: hace falta calcular todos para
-        # poder ordenar bien, pero no se le busca nombre a ninguno todavía.
-        metrics = []
-        for cod in codigos:
-            ventas_cod = ventas.get(cod)
-            cantidades = [round(ventas_cod[m], 2) for m in meses] if ventas_cod else [0.0] * n_meses
-            total = round(sum(cantidades), 2)
-            promedio = round(total / n_meses, 2) if n_meses else 0.0
-            maximo = max(cantidades) if cantidades else 0.0
-            positivos = [c for c in cantidades if c > 0]
-            minimo = min(positivos) if positivos else None
-            stock_total = round(sum(stock_por_dep.get(cod, {}).values()), 2)
-            metrics.append({
-                "codigo": cod,
-                "totalVendido": total,
-                "promedio": promedio,
-                "maximo": maximo,
-                "minimo": minimo,
-                "stock": stock_total,
-            })
-
+        if metrics is None:
+            metrics = _metricas_articulos(
+                cur, meses, meses_set, n_meses, d1n, d2n,
+                q_norm, linea_norm, linea_exacta,
+            )
+            _cache_guardar(clave_cache, metrics)
+        # Ordenar y paginar: sobre una COPIA de la lista cacheada, y cada fila
+        # de la página se copia antes de pegarle el nombre — así el cache
+        # guarda siempre métricas puras, reutilizables con cualquier orden.
+        ordenadas = list(metrics)
         if sort == "codigo":
-            metrics.sort(key=lambda r: r["codigo"], reverse=reverse)
+            ordenadas.sort(key=lambda r: r["codigo"], reverse=reverse)
         else:
-            metrics.sort(key=lambda r: (r[sort] if r[sort] is not None else -1), reverse=reverse)
+            ordenadas.sort(key=lambda r: (r[sort] if r[sort] is not None else -1), reverse=reverse)
 
-        total_items = len(metrics)
+        total_items = len(ordenadas)
         if export:
             # Sin paginar — TODOS los artículos filtrados, de una vez (ver
             # docstring: exige `linea`, gateado más arriba).
             page = 1
             page_size = total_items or 1
             total_pages = 1
-            page_rows = metrics
+            page_rows = [dict(r) for r in ordenadas]
         else:
             total_pages = max(1, -(-total_items // page_size))  # ceil
             page = min(page, total_pages)
             start = (page - 1) * page_size
-            page_rows = metrics[start:start + page_size]
+            page_rows = [dict(r) for r in ordenadas[start:start + page_size]]
 
         # Nombre del artículo: para export, TODOS los códigos filtrados; si
         # no, solo los de esta página (máx. page_size) — es la parte pesada
@@ -1108,8 +1265,11 @@ def fetch_consumo_articulos(
         CHUNK_NOMBRES = 500
         for i in range(0, len(page_codes), CHUNK_NOMBRES):
             batch = page_codes[i:i + CHUNK_NOMBRES]
-            ph = ",".join("?" for _ in batch)
-            cur.execute(SQL_NOMBRES_CHUNK.format(ph=ph), batch)
+            # Dos variantes por código (ver _variantes_cod), de ahí el x2 en
+            # los placeholders — el chunk sigue lejos del tope de parámetros.
+            valores = [v for c in batch for v in _variantes_cod(c)]
+            ph = ",".join("?" for _ in valores)
+            cur.execute(SQL_NOMBRES_CHUNK.format(ph=ph), valores)
             for cod, detalle, dmed, umed in cur.fetchall():
                 cod = (str(cod or "")).strip()
                 nombre = " ".join(
@@ -1141,42 +1301,40 @@ def fetch_consumo_articulos(
 # la línea (Stk_Nivel1.Detalle) como unidad en vez del artículo — vendido,
 # promedio mensual, máximo, mínimo > 0, stock actual y coberturas.
 #
-# La agrupación se hace ENTERA EN SQL por (línea, año, mes, CompCodigo,
-# Estado): no se pasa por el artículo intermedio ni se resuelve la línea de
-# cada código en Python (que sería un dict de decenas de miles de entradas).
-# El filtrado por blacklist de comprobantes + _es_valido sigue en Python,
-# igual que en las otras dos funciones de consumo, así que el criterio de
-# "vendido" es idéntico; lo único que cambia es el nivel de agregación.
+# La agrupación se hace ENTERA EN SQL por (línea, año, mes): no se pasa por el
+# artículo intermedio ni se resuelve la línea de cada código en Python (que
+# sería un dict de decenas de miles de entradas).
+#
+# CompCodigo y Estado salieron del GROUP BY: el criterio de
+# "pedido válido" (blacklist de comprobantes + Cerrado/Facturado) se aplica en
+# el WHERE con _cond_pedido_valido, así que ya no hay que arrastrar una fila
+# por combinación de comprobante y estado ni el join a MAGNUS_SITD. Mismo
+# criterio, verificado contra la base; menos de la mitad de filas viajando.
 #
 # Máximo/mínimo son del MES DE LA LÍNEA COMPLETA (la suma de todos sus
 # artículos en ese mes), no el máximo de sus artículos — es la lectura que
 # tiene sentido para decidir compras por línea.
 #
-# {q} y {linea} los completa fetch_consumo_lineas con los filtros aplicados
-# (parametrizados, nunca interpolados).
+# {q}, {linea} y {valido} los completa fetch_consumo_lineas con los filtros
+# aplicados (parametrizados, nunca interpolados).
 SQL_CONSUMO_LINEAS = f"""
 SELECT
     ISNULL(NULLIF(LTRIM(RTRIM(n1.Detalle)), ''), '{LINEA_SIN_ASIGNAR}')  AS Linea,
     DATEPART(year,  DATEADD(day, cab.FechaPedido, '1800-12-28'))         AS Anio,
     DATEPART(month, DATEADD(day, cab.FechaPedido, '1800-12-28'))         AS Mes,
-    cab.CompCodigo                                                        AS CompCodigo,
-    est.Ped_EstadoDescripcion                                             AS Estado,
     SUM(r.CantidadPedida)                                                 AS Cantidad
 FROM EVERWEAR.dbo.VenFer_PedidoReng r
 INNER JOIN EVERWEAR.dbo.VenFer_PedidoCabecera cab ON cab.NroMovVenta = r.NroMovVenta
-LEFT  JOIN MAGNUS_SITD.dbo.Pedido_Estados     est ON cab.EstadoPedido = est.Ped_Estado
 {_JOIN_NACIONAL_RENG}
-LEFT  JOIN EVERWEAR.dbo.[StkFer_ArtParamet]   ap ON ap.ArticuloPatron = s_n.ArticuloPatron
-LEFT  JOIN EVERWEAR.dbo.[Stk_Nivel1]          n1 ON n1.Nivel1         = ap.Nivel1
+{_JOIN_LINEA_ART}
 WHERE cab.FechaPedido BETWEEN ? AND ?
   {_COND_NACIONAL}
+  {{valido}}
   {{q}}
   {{linea}}
 GROUP BY ISNULL(NULLIF(LTRIM(RTRIM(n1.Detalle)), ''), '{LINEA_SIN_ASIGNAR}'),
          DATEPART(year,  DATEADD(day, cab.FechaPedido, '1800-12-28')),
-         DATEPART(month, DATEADD(day, cab.FechaPedido, '1800-12-28')),
-         cab.CompCodigo,
-         est.Ped_EstadoDescripcion
+         DATEPART(month, DATEADD(day, cab.FechaPedido, '1800-12-28'))
 """
 
 # Stock actual por línea (depósitos 1/2/3) + cuántos artículos nacionales
@@ -1214,6 +1372,7 @@ def fetch_consumo_lineas(
     linea: str | None = None,
     linea_exacta: bool = False,
     export: bool = False,
+    fresh: bool = False,
 ):
     """Misma tabla que fetch_consumo_articulos pero agregada por LÍNEA
     (Stk_Nivel1.Detalle), sobre artículos NACIONALES únicamente.
@@ -1228,7 +1387,9 @@ def fetch_consumo_lineas(
     la respuesta escala con el catálogo (ver la NOTA de rendimiento allá).
 
     `q` (substring de código) y `linea` se combinan con AND cuando vienen.
-    `export=True` devuelve todas las líneas del filtro sin paginar."""
+    `export=True` devuelve todas las líneas del filtro sin paginar.
+    `fresh=True` saltea el cache (lo manda el botón "Refrescar"): ordenar por
+    otra columna o cambiar de página reusa el cálculo y no toca la base."""
     q_norm = (q or "").strip()
     linea_norm = (linea or "").strip()
 
@@ -1242,23 +1403,24 @@ def fetch_consumo_lineas(
     n_meses = len(meses)
     meses_set = set(meses)
 
-    sort = sort if sort in _SORT_KEYS_LINEAS else "totalVendido"
-    reverse = str(sort_dir).lower() != "asc"
-    page = max(1, int(page or 1))
-    page_size = max(1, min(int(page_size or 20), 200))
+    # sort/página se normalizan en _armar_pagina_lineas, que es lo único que
+    # corre cuando el cálculo viene del cache.
 
     # Los filtros se arman como fragmentos con `?` y los valores se pasan
     # aparte — el texto del cliente NUNCA se interpola en el SQL.
-    frag_q_reng = "AND r.CodArticu LIKE ?" if q_norm else ""
-    frag_q_stock = "AND a.CodArticulo LIKE ?" if q_norm else ""
-    frag_linea, params_linea = _cond_linea(linea_norm, linea_exacta)
-    params_reng: list = [d1n, d2n]
-    params_stock: list = []
-    if q_norm:
-        params_reng.append(f"%{q_norm}%")
-        params_stock.append(f"%{q_norm}%")
-    params_reng.extend(params_linea)
-    params_stock.extend(params_linea)
+    _, frag_q_reng, frag_linea, params_q_linea = _fragmentos_filtro(
+        q_norm, linea_norm, linea_exacta, "r.CodArticu")
+    _, frag_q_stock, _, _ = _fragmentos_filtro(
+        q_norm, linea_norm, linea_exacta, "a.CodArticulo")
+    params_reng: list = [d1n, d2n] + params_q_linea
+    params_stock: list = list(params_q_linea)
+
+    # Igual que en la vista de artículos: la lista de líneas ya calculada no
+    # depende del orden ni de la página, así que se cachea.
+    clave_cache = ("lineas", d1n, d2n, q_norm.lower(), linea_norm.lower(), bool(linea_exacta))
+    filas = None if fresh else _cache_leer(clave_cache)
+    if filas is not None:
+        return _armar_pagina_lineas(filas, meses, n_meses, sort, sort_dir, page, page_size, export)
 
     ventas: dict[str, dict[str, float]] = {}
     stock_linea: dict[str, float] = {}
@@ -1270,34 +1432,23 @@ def fetch_consumo_lineas(
         cur.execute("SET DATEFORMAT ymd; SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;")
 
         cur.execute(
-            SQL_CONSUMO_LINEAS.format(q=frag_q_reng, linea=frag_linea),
+            SQL_CONSUMO_LINEAS.format(
+                valido=_cond_pedido_valido(cur), q=frag_q_reng, linea=frag_linea),
             params_reng,
         )
-        cols = [c[0] for c in cur.description]
-        for row in cur.fetchall():
-            d = dict(zip(cols, row))
-            lin = (str(d.get("Linea") or "")).strip() or LINEA_SIN_ASIGNAR
+        for lin, anio, mes_n, cant in cur.fetchall():
+            lin = (str(lin or "")).strip() or LINEA_SIN_ASIGNAR
             try:
-                comp = int(d.get("CompCodigo")) if d.get("CompCodigo") is not None else None
-            except (TypeError, ValueError):
-                comp = None
-            if comp in COMP_CODIGOS_EXCLUIDOS:
-                continue
-            if not _es_valido(d.get("Estado")):
-                continue
-            try:
-                anio = int(d.get("Anio"))
-                mes_n = int(d.get("Mes"))
+                key = f"{int(anio):04d}-{int(mes_n):02d}"
             except (TypeError, ValueError):
                 continue
-            key = f"{anio:04d}-{mes_n:02d}"
             if key not in meses_set:
                 continue
             m = ventas.get(lin)
             if m is None:
                 m = {mes: 0.0 for mes in meses}
                 ventas[lin] = m
-            m[key] += float(_safe(d.get("Cantidad")) or 0)
+            m[key] += float(_safe(cant) or 0)
 
         cur.execute(
             SQL_STOCK_LINEAS.format(q=frag_q_stock, linea=frag_linea),
@@ -1331,25 +1482,42 @@ def fetch_consumo_lineas(
                 "minimo": minimo,
                 "stock": round(stock_linea.get(lin, 0.0), 2),
             })
-
-        if sort == "linea":
-            filas.sort(key=lambda r: r["linea"], reverse=reverse)
-        else:
-            filas.sort(key=lambda r: (r[sort] if r[sort] is not None else -1), reverse=reverse)
-
-        total_items = len(filas)
-        if export:
-            page = 1
-            page_size = total_items or 1
-            total_pages = 1
-            page_rows = filas
-        else:
-            total_pages = max(1, -(-total_items // page_size))
-            page = min(page, total_pages)
-            start = (page - 1) * page_size
-            page_rows = filas[start:start + page_size]
     finally:
         conn.close()
+
+    _cache_guardar(clave_cache, filas)
+    return _armar_pagina_lineas(filas, meses, n_meses, sort, sort_dir, page, page_size, export)
+
+
+def _armar_pagina_lineas(filas, meses, n_meses, sort, sort_dir, page, page_size, export):
+    """Ordena, pagina y arma la respuesta de fetch_consumo_lineas.
+
+    Aparte de la consulta porque es lo único que hace falta rehacer cuando el
+    cálculo ya está cacheado: ordenar por otra columna o pasar de página no
+    vuelve a la base. Ordena sobre una COPIA — la lista del cache queda intacta
+    y sirve para cualquier orden."""
+    sort = sort if sort in _SORT_KEYS_LINEAS else "totalVendido"
+    reverse = str(sort_dir).lower() != "asc"
+    page = max(1, int(page or 1))
+    page_size = max(1, min(int(page_size or 20), 200))
+
+    ordenadas = list(filas)
+    if sort == "linea":
+        ordenadas.sort(key=lambda r: r["linea"], reverse=reverse)
+    else:
+        ordenadas.sort(key=lambda r: (r[sort] if r[sort] is not None else -1), reverse=reverse)
+
+    total_items = len(ordenadas)
+    if export:
+        page = 1
+        page_size = total_items or 1
+        total_pages = 1
+        page_rows = ordenadas
+    else:
+        total_pages = max(1, -(-total_items // page_size))
+        page = min(page, total_pages)
+        start = (page - 1) * page_size
+        page_rows = ordenadas[start:start + page_size]
 
     return {
         "desde": meses[0],

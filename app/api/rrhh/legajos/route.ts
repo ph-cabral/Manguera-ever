@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { resolverConvenio } from "@/lib/rrhh/legajoService";
 
 export const dynamic = "force-dynamic";
 
@@ -75,6 +76,8 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const convenio = await resolverConvenio(step3?.convenioId, step3?.categoriaId);
+
   try {
     const legajo = await prisma.legajo.create({
       data: {
@@ -117,8 +120,9 @@ export async function POST(req: NextRequest) {
         modalidadContrato: step3?.modalidadContrato ?? null,
         situacionRevista: step3?.situacionRevista ?? null,
         regimen: step3?.regimen ?? null,
-        convenio: step3?.convenio ?? null,
-        categoria: step3?.categoria ?? null,
+        // convenio/categoria salen del catálogo: se guardan los ids y el nombre
+        // resuelto, para que texto y FK no puedan divergir
+        ...convenio,
         puestoInterno: step3?.puestoInterno ?? null,
         sector: step3?.sector ?? null,
         retribucionPactada: step3?.retribucionPactada ?? null,

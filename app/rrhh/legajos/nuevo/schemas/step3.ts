@@ -8,8 +8,13 @@ export const step3Schema = z.object({
   situacionRevista: z.string().optional().default("01"),
   regimen: z.string().optional().default("SIPA"),
 
-  convenio: z.string().optional(), // ej "0130/75 - Comercio"
-  categoria: z.string().optional(), // ej "007604 - Categoría B Adm."
+  // se eligen del catálogo (everwear.convenio / convenio_categoria): viajan los
+  // ids y el POST resuelve los nombres. Los campos de texto quedan opcionales
+  // sólo para que no rompan los borradores guardados antes del cambio.
+  convenioId: z.number().int().positive().optional().nullable(),
+  categoriaId: z.number().int().positive().optional().nullable(),
+  convenio: z.string().optional(),
+  categoria: z.string().optional(),
   puestoInterno: z.string().optional(),
   sector: z.string().optional(),
 

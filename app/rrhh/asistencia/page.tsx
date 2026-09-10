@@ -10,7 +10,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
-import { Pencil, Plus, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Pencil, Plus, X } from "lucide-react";
 import { InicioButton } from "@/components/ui/InicioButton";
 import { Input } from "@/components/ui/input";
 import { DateRangeField } from "@/components/ui/date-range-field";
@@ -271,12 +271,17 @@ const CAL_MESES = [
   "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
 ];
 
-// Botón "Feriados": abre un calendario del mes en curso (sin navegación —
-// sólo el mes actual) donde se pueden marcar/desmarcar varios días como no
-// laborables. Esos días quedan en asistencia.feriado (sql/asistencia_feriados.sql)
-// y hacen que calcEstado muestre "Feriado" en vez de "Ausente" cuando no hay
-// fichaje, para no ensuciar el control de inasistencias con un día en el que
-// nadie trabajó (2026-07-29).
+// Botón "Feriados": abre un calendario donde se pueden marcar/desmarcar varios
+// días como no laborables. Esos días quedan en asistencia.feriado
+// (sql/asistencia_feriados.sql) y hacen que calcEstado muestre "Feriado" en vez
+// de "Ausente" cuando no hay fichaje, para no ensuciar el control de
+// inasistencias con un día en el que nadie trabajó (2026-07-29).
+//
+// El calendario navega mes a mes con ‹ › (2026-09-10): el tope diario de un
+// feriado se pone en 0 y de ahí sale la columna FERIADOS de la planilla mensual
+// de novedades, así que hay que poder cargar meses ya cerrados hacia atrás
+// —antes sólo se veía el mes en curso y no había forma de completarlos desde la
+// pantalla. El endpoint ya aceptaba cualquier rango, no hizo falta tocarlo.
 function FeriadosButton({ onSaved }: { onSaved: () => void }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -284,8 +289,11 @@ function FeriadosButton({ onSaved }: { onSaved: () => void }) {
   const [saving, setSaving] = useState<string | null>(null);
 
   const hoy = new Date();
-  const year = hoy.getFullYear();
-  const month = hoy.getMonth(); // 0-based
+  const [year, setYear] = useState(hoy.getFullYear());
+  const [month, setMonth] = useState(hoy.getMonth()); // 0-based
+  const enMesActual =
+    year === hoy.getFullYear() && month === hoy.getMonth();
+
   const mm = String(month + 1).padStart(2, "0");
   const ultimoDia = new Date(year, month + 1, 0).getDate();
   const desdeMes = `${year}-${mm}-01`;
@@ -303,9 +311,25 @@ function FeriadosButton({ onSaved }: { onSaved: () => void }) {
     }
   }, [desdeMes, hastaMes]);
 
+  // Carga al abrir y en cada cambio de mes. Con el modal cerrado no consulta.
+  useEffect(() => {
+    if (open) load();
+  }, [open, load]);
+
+  const moverMes = (delta: number) => {
+    const d = new Date(year, month + delta, 1);
+    setYear(d.getFullYear());
+    setMonth(d.getMonth());
+  };
+
+  const volverAlMesActual = () => {
+    setYear(hoy.getFullYear());
+    setMonth(hoy.getMonth());
+  };
+
   const openModal = () => {
+    volverAlMesActual();
     setOpen(true);
-    load();
   };
 
   const toggle = async (fecha: string) => {
@@ -355,10 +379,8 @@ function FeriadosButton({ onSaved }: { onSaved: () => void }) {
               className="w-full max-w-xs rounded-lg border bg-popover p-4 shadow-lg"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="mb-1 flex items-center justify-between">
-                <h2 className="text-sm font-medium">
-                  Feriados · {CAL_MESES[month]} {year}
-                </h2>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <span className="text-sm font-medium">Feriados</span>
                 <button
                   type="button"
                   onClick={() => setOpen(false)}
@@ -367,49 +389,94 @@ function FeriadosButton({ onSaved }: { onSaved: () => void }) {
                   ✕
                 </button>
               </div>
+
+              <div className="mb-2 flex items-center justify-between gap-1">
+                <button
+                  type="button"
+                  onClick={() => moverMes(-1)}
+                  title="Mes anterior"
+                  className="rounded-md border p-1 hover:bg-accent"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  onClick={volverAlMesActual}
+                  disabled={enMesActual}
+                  title={enMesActual ? undefined : "Volver al mes actual"}
+                  className={cn(
+                    "flex-1 rounded-md px-2 py-1 text-sm font-medium",
+                    enMesActual
+                      ? "cursor-default"
+                      : "hover:bg-accent hover:underline",
+                  )}
+                >
+                  {CAL_MESES[month]} {year}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => moverMes(1)}
+                  title="Mes siguiente"
+                  className="rounded-md border p-1 hover:bg-accent"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+
               <p className="mb-3 text-xs text-muted-foreground">
-                Marcá los días no laborables del mes. Esos días no cuentan
-                como falta.
+                Marcá los días no laborables. Esos días no cuentan como falta y
+                salen como feriado en la planilla mensual de novedades.
               </p>
-              {loading ? (
-                <p className="py-6 text-center text-sm text-muted-foreground">
-                  Cargando…
-                </p>
-              ) : (
-                <>
-                  <div className="grid grid-cols-7 gap-0.5 text-center text-[11px] text-muted-foreground mb-1">
-                    {CAL_WEEKDAYS.map((w) => (
-                      <div key={w} className="py-1">
-                        {w}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="grid grid-cols-7 gap-0.5">
-                    {cells.map((d, i) => {
-                      if (!d) return <div key={i} />;
-                      const fecha = `${year}-${mm}-${String(d).padStart(2, "0")}`;
-                      const marcado = feriados.has(fecha);
-                      return (
-                        <button
-                          key={i}
-                          type="button"
-                          disabled={saving === fecha}
-                          onClick={() => toggle(fecha)}
-                          title={fecha}
-                          className={cn(
-                            "h-7 w-7 mx-auto rounded text-xs transition-colors disabled:opacity-50",
-                            marcado
-                              ? "bg-indigo-600 text-white hover:opacity-90"
+              <div
+                className={cn(
+                  "transition-opacity",
+                  loading && "pointer-events-none opacity-40",
+                )}
+              >
+                <div className="grid grid-cols-7 gap-0.5 text-center text-[11px] text-muted-foreground mb-1">
+                  {CAL_WEEKDAYS.map((w) => (
+                    <div key={w} className="py-1">
+                      {w}
+                    </div>
+                  ))}
+                </div>
+                <div className="grid grid-cols-7 gap-0.5">
+                  {cells.map((d, i) => {
+                    if (!d) return <div key={i} />;
+                    const fecha = `${year}-${mm}-${String(d).padStart(2, "0")}`;
+                    const marcado = feriados.has(fecha);
+                    const finde = [0, 6].includes(
+                      new Date(`${fecha}T00:00:00`).getDay(),
+                    );
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        disabled={saving === fecha}
+                        onClick={() => toggle(fecha)}
+                        title={fecha}
+                        className={cn(
+                          "h-7 w-7 mx-auto rounded text-xs transition-colors disabled:opacity-50",
+                          marcado
+                            ? "bg-indigo-600 text-white hover:opacity-90"
+                            : finde
+                              ? "text-muted-foreground hover:bg-accent"
                               : "hover:bg-accent",
-                          )}
-                        >
-                          {d}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
+                        )}
+                      >
+                        {d}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <p className="mt-2 text-center text-[11px] text-muted-foreground">
+                {loading
+                  ? "Cargando…"
+                  : feriados.size === 0
+                    ? "Sin feriados cargados en este mes"
+                    : `${feriados.size} día${feriados.size === 1 ? "" : "s"} marcado${feriados.size === 1 ? "" : "s"}`}
+              </p>
             </div>
           </div>,
           document.body,

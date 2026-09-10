@@ -56,10 +56,25 @@ function layout(node: MenuNode, cx: number, cy: number, depth: number): Position
   return out;
 }
 
+/**
+ * Con UN SOLO módulo habilitado la grilla es un botón que no decide nada: el
+ * inicio pasa a ser ese módulo, ya abierto, con sus accesos alrededor (caso
+ * típico: un vendedor que sólo entra a Ventas → Vendedor). Devuelve null si
+ * hay más de un módulo, o si el único no tiene sub-vistas (ahí el botón suelto
+ * de la grilla sigue siendo la mejor pantalla, y navega directo).
+ */
+function moduloUnico(modules: MenuNode[]): MenuNode | null {
+  if (modules.length !== 1) return null;
+  const m = collapse(modules[0]);
+  return m.children.length > 0 ? m : null;
+}
+
 export function HomeMenu({ modules }: { modules: MenuNode[] }) {
   const router = useRouter();
+  const unico = moduloUnico(modules);
   // center = módulo activo (árbol de skills completo); null = grilla de módulos.
-  const [center, setCenter] = useState<MenuNode | null>(null);
+  // Con un solo módulo arranca ya abierto y no hay grilla a la que volver.
+  const [center, setCenter] = useState<MenuNode | null>(unico);
 
   function enter(node: MenuNode) {
     // El colapso (bajar un nivel si el módulo no tiene dashboard propio) sólo
@@ -108,22 +123,27 @@ export function HomeMenu({ modules }: { modules: MenuNode[] }) {
 
   return (
     <div className="relative w-full flex flex-col items-center">
-      {/* Barra: volver + módulo actual + cerrar */}
+      {/* Barra: volver + módulo actual + cerrar. Con un solo módulo no hay
+          grilla detrás, así que queda sólo el nombre. */}
       <div className="menu-fade-in mb-6 flex w-full max-w-3xl items-center gap-2 px-2">
-        <button
-          onClick={back}
-          className="inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm text-white/80 hover:bg-white/10 hover:text-white transition-colors"
-        >
-          <ChevronLeft className="size-4" /> Volver
-        </button>
+        {!unico && (
+          <button
+            onClick={back}
+            className="inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-sm text-white/80 hover:bg-white/10 hover:text-white transition-colors"
+          >
+            <ChevronLeft className="size-4" /> Volver
+          </button>
+        )}
         <span className="text-sm text-white/90">{center.label}</span>
-        <button
-          onClick={back}
-          title="Cerrar"
-          className="ml-auto rounded-lg p-1.5 text-white/70 hover:bg-white/10 hover:text-white transition-colors"
-        >
-          <X className="size-4" />
-        </button>
+        {!unico && (
+          <button
+            onClick={back}
+            title="Cerrar"
+            className="ml-auto rounded-lg p-1.5 text-white/70 hover:bg-white/10 hover:text-white transition-colors"
+          >
+            <X className="size-4" />
+          </button>
+        )}
       </div>
 
       {/* Escenario radial: todo el árbol siempre visible, sin cambiar de vista */}

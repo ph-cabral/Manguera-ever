@@ -207,6 +207,18 @@ export default function SistemaClient() {
     tableroId: number;
   } | null>(null);
 
+  // Tarjetas desplegadas: el texto extra ya no se abre con hover, se togglea con
+  // click sobre la tarjeta (segundo click la vuelve a contraer). La edición pasó
+  // al lápiz, que está siempre visible.
+  const [expandidas, setExpandidas] = useState<Set<number>>(new Set());
+  const toggleExpandir = (id: number) =>
+    setExpandidas((prev) => {
+      const s = new Set(prev);
+      if (s.has(id)) s.delete(id);
+      else s.add(id);
+      return s;
+    });
+
   // ---------- drag & drop de tarjetas (pointer events, estilo Trello) ----------
   // Sin drag nativo HTML5: un clon de la tarjeta flota en un portal siguiendo el
   // puntero (inclinado, como Trello) y un bloque gris del tamaño real marca dónde
@@ -793,14 +805,7 @@ export default function SistemaClient() {
                           <div
                             data-card-id={card.id}
                             onPointerDown={(e) => onCardPointerDown(e, card, col.id)}
-                            onClick={() =>
-                              setModalTarjeta({
-                                tarjeta: card,
-                                columnaId: col.id,
-                                clave: tablero.clave,
-                                tableroId: tablero.id,
-                              })
-                            }
+                            onClick={() => toggleExpandir(card.id)}
                             className="group cursor-pointer select-none"
                           >
                             <TarjetaVisual
@@ -808,7 +813,15 @@ export default function SistemaClient() {
                               titleKey={titleKey}
                               subtitleField={subtitleField}
                               clave={tablero.clave}
-                              expandir={dragActivo == null}
+                              abierta={dragActivo == null && expandidas.has(card.id)}
+                              onEditar={() =>
+                                setModalTarjeta({
+                                  tarjeta: card,
+                                  columnaId: col.id,
+                                  clave: tablero.clave,
+                                  tableroId: tablero.id,
+                                })
+                              }
                             />
                           </div>
                         </Fragment>
@@ -887,7 +900,7 @@ export default function SistemaClient() {
               titleKey={schemaFor(tablero.clave).titleKey}
               subtitleField={schemaFor(tablero.clave).fields.find((f) => f.t === "date")}
               clave={tablero.clave}
-              expandir={false}
+              abierta={false}
               flotante
             />
           </div>,
@@ -903,15 +916,18 @@ function TarjetaVisual({
   titleKey,
   subtitleField,
   clave,
-  expandir,
+  abierta,
+  onEditar,
   flotante,
 }: {
   card: Tarjeta;
   titleKey: string;
   subtitleField?: CampoDef;
   clave: string;
-  /** habilita el despliegue del resto del texto al hacer hover (requiere wrapper .group) */
-  expandir: boolean;
+  /** true = el resto del texto está desplegado (lo controla el click, no el hover) */
+  abierta: boolean;
+  /** abre el modal de edición desde el lápiz */
+  onEditar?: () => void;
   flotante?: boolean;
 }) {
   const txt = String(card.campos[titleKey] || "(sin descripción)");
@@ -939,11 +955,31 @@ function TarjetaVisual({
       {impColor && (
         <span title={`Importancia ${imp}`} className={`block h-1.5 w-10 rounded-full mb-1.5 ${impColor}`} />
       )}
-      <p className="text-sm text-zinc-100 leading-snug whitespace-pre-line break-words">{first}</p>
+      <div className="flex items-start gap-1.5">
+        <p className="flex-1 min-w-0 text-sm text-zinc-100 leading-snug whitespace-pre-line break-words">{first}</p>
+        {onEditar && (
+          <button
+            type="button"
+            title="Editar"
+            aria-label="Editar tarjeta"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onEditar();
+            }}
+            className="shrink-0 -mr-1 -mt-0.5 rounded p-1 text-zinc-500 hover:text-zinc-100 hover:bg-white/[0.08] transition-colors"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-3.5 w-3.5">
+              <path d="M12 20h9" strokeLinecap="round" />
+              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z" strokeLinejoin="round" />
+            </svg>
+          </button>
+        )}
+      </div>
       {rest.length > 0 && (
         <div
           className={`grid transition-[grid-template-rows] duration-300 ease-in-out ${
-            expandir ? "grid-rows-[0fr] group-hover:grid-rows-[1fr]" : "grid-rows-[0fr]"
+            abierta ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
           }`}
         >
           <p className="overflow-hidden text-sm text-zinc-400 whitespace-pre-line break-words">{rest.join("\n")}</p>

@@ -25,6 +25,7 @@ from compras import (
 )
 from oc_areas import fetch_oc_por_area, fetch_oc_detalle_area
 from ingresos import fetch_remitos_ingreso
+from embolsado import fetch_embolsado
 from ventas import (
     fetch_pedidos_mes, fetch_ventas_por_linea, fetch_vendedores,
     fetch_top_clientes, fetch_top_lineas, fetch_clientes_por_linea,
@@ -392,6 +393,23 @@ def deposito_stock_por_articulos(codigos: str = Query(...)):
     try:
         lista = [c for c in codigos.split(",") if c.strip()]
         return fetch_stock_por_articulos(lista)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
+
+@app.get("/deposito/embolsado")
+def deposito_embolsado(
+    meses_venta: int = Query(default=6),
+    meses_cobertura: int = Query(default=4),
+    incluir_cubiertos: bool = Query(default=True),
+):
+    """Recomendación de embolsado, ordenada por menor cobertura.
+
+    Cobertura = stock ya embolsado en CENTRAL / venta máxima mensual de los
+    últimos `meses_venta` meses. Se recomienda llevar el stock a
+    `meses_cobertura` meses, topeado por lo que haya en el pulmón de ingreso.
+    Ver el docstring de embolsado.py (universo, fuentes y gotchas)."""
+    try:
+        return fetch_embolsado(meses_venta, meses_cobertura, incluir_cubiertos)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"SQL Error: {str(e)}")
 

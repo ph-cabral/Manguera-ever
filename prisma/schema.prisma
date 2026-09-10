@@ -892,6 +892,35 @@ model finanza_presupuesto_area {
 // para Prisma (`npx prisma generate` después de correr el SQL).
 // Los tres valores están en ITEMS aunque en la pantalla se carguen en MILES:
 // la API multiplica al escribir. Uno por proceso y mes ('YYYY-MM').
+// Registro de trabajo de embolsado — /deposito/embolsado (ver
+// sql/deposito_embolsado.sql). La recomendación NO se guarda (se calcula en
+// vivo contra Magnus + WMS); acá queda quién embolsó qué, cuándo empezó,
+// cuándo terminó y cuántas unidades salieron, más una foto de la
+// recomendación del momento en que tomó el ítem.
+//
+// Los dos candados de "un ítem por persona / una persona por ítem" son
+// índices ÚNICOS PARCIALES (WHERE fin IS NULL) y viven en el SQL: Prisma no
+// sabe declararlos y `db push` no los toca. No agregarlos acá como @@unique,
+// que impediría repetir un artículo o una persona en el histórico.
+model deposito_embolsado {
+  id              Int       @id @default(autoincrement())
+  codArticulo     String    @db.VarChar(20)
+  nombre          String    @default("") @db.VarChar(160)
+  empaque         String    @default("") @db.VarChar(40)
+  embolsador      String    @db.VarChar(60)
+  inicio          DateTime  @default(now())
+  fin             DateTime?
+  cantidad        Int?
+  recomendado     Int?
+  ventaMaxMes     Int?
+  stockSinIngreso Int?
+  enIngreso       Int?
+  creadoPor       Int?
+
+  @@index([inicio(sort: Desc)])
+  @@schema("everwear")
+}
+
 model deposito_objetivo {
   id            Int      @id @default(autoincrement())
   proceso       String   @db.VarChar(40)
